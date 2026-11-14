@@ -14,7 +14,7 @@ declarative deltas instead of whole replacement `GameData/*.bin`, `Msg/*/*.msbt.
 ## Install (prebuilt)
 
 Download `FEFW_RuntimePatcher-<version>.zip` from [Releases](https://github.com/Ronnoc/RuntimePatcher/releases),
-unzip it into `<emulator>/load/04007EF01F8AE000/` and enable `FEFW_RuntimePatcher` in the emulator's add-on list.
+unzip it into `<emulator>/load/<title id>/` and enable `FEFW_RuntimePatcher` in the emulator's add-on list.
 Each release is built for one game version (noted in the release); other versions need a source build.
 
 ## Features
@@ -46,7 +46,7 @@ python tools/build_emulator_mod.py all --deploy   # build foundation (NRO loader
   entries to a small bootstrap) + `romfs/fefw/runtime_patcher.nro|nrr`, loaded after boot through the game's own `nn::ro`.
   No game exefs changes, no rtld patch.
 - **Static loader (fallback):** `--loader static` installs `subsdk9` into the game's `exefs/`.
-- `--deploy` copies the packages into `<emulator user folder>/load/04007EF01F8AE000/` for every installed
+- `--deploy` copies the packages into `<emulator user folder>/load/<title id>/` for every installed
   emulator (`%APPDATA%/eden` on Windows, `~/.local/share/eden` on Linux, `~/Library/Application Support/eden`
   on macOS; same for citron and others). Set `FEFW_EMU_DIR` to choose the folders yourself.
 - Eden log filter: `*:Info Debug.Emulated:Debug` to see `[FEFW]` / `[FEFW-BOOT]` messages.

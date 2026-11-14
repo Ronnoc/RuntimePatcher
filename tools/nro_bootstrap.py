@@ -33,8 +33,13 @@ PLT_HOOKS = list(zip(FS_IMPORTS, ["fefw_fs_OpenFile", "fefw_fs_ReadFile", "fefw_
     ("_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj", "fefw_hid_GetNpadStateFullKey"),
 ]
 PLT_IMPORTS = [imp for imp, _ in PLT_HOOKS]
-# Mid-function hooks come from the game profile (tools/game_profile.py): [NRO export, main offset, original
-# instruction]. Hook index = len(PLT_HOOKS) + position.
+# Mid-function hooks come from the game profile (tools/game_profile.py): [name, main offset, original
+# instruction]. Hook index = len(PLT_HOOKS) + position; mid hook k enters the runtime through export fefw_mid_<k>.
+MAX_MID_HOOKS = 16  # = FEFW_MAX_MID_HOOKS (number of fefw_mid_<k> exports in nx/src/nx_game_hooks.cpp)
+
+
+def mid_hook_exports(mid_hooks):
+    return [f"fefw_mid_{k}" for k in range(len(mid_hooks))]
 
 
 def _pc_relative(insn):
@@ -164,7 +169,7 @@ def build(nx_dir, out_dir, profile, clang, lld, mount="Contents"):
         f.write(f'#define FEFW_MOUNT "{mount}"\n')
         f.write(f'#define FEFW_NRO_PATH "{mount}:/fefw/runtime_patcher.nro"\n')
         f.write(f'#define FEFW_NRR_PATH "{mount}:/fefw/runtime_patcher.nrr"\n')
-        exports = [exp for _, exp in PLT_HOOKS] + [name for name, _, _ in mid_hooks]
+        exports = [exp for _, exp in PLT_HOOKS] + mid_hook_exports(mid_hooks)
         f.write("#define FEFW_HOOK_NAME_CASES \\\n")
         f.write("".join(f'    case {i}: return "{exp}"; \\\n' for i, exp in enumerate(exports)) + "\n")
 

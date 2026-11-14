@@ -20,7 +20,7 @@ import struct
 from typing import Dict, List, Any, Optional
 
 def fnv1_64(data: bytes, basis: int = 0xCBF29CE484222325) -> int:
-    """FNV-1 (multiply, then xor) — identical to FEFWTwiddler Utils.BitMath.fnv1_64 / the game's hash.
+    """FNV-1 (multiply, then xor) — the hash the game uses for these keys.
     Not FNV-1a: label/mod hashes must match what the game and src/vfs_overlay.cpp expect."""
     h = basis
     for b in data:

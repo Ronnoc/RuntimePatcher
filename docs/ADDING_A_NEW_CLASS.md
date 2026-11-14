@@ -105,12 +105,12 @@ python tools/build_emulator_mod.py all --deploy --loader static                 
 ```
 
 What `--deploy` does:
-- packages land in `release/emulator_ready/04007EF01F8AE000/` (`FEFW_RuntimePatcher` + one `FEFW_<Id>_Mod` per
-  manifest) and are copied into `<emulator user folder>/load/04007EF01F8AE000/` (see README; `FEFW_EMU_DIR` overrides);
+- packages land in `release/emulator_ready/<title id>/` (`FEFW_RuntimePatcher` + one `FEFW_<Id>_Mod` per
+  manifest) and are copied into `<emulator user folder>/load/<title id>/` (see README; `FEFW_EMU_DIR` overrides);
 - **nro**: `FEFW_RuntimePatcher` = `exefs/<main build id>.ips` + `romfs/fefw/runtime_patcher.nro|nrr`; removes a stale
   `subsdk9` from the game exefs (`FEFW_GAME_EXEFS`); checks that our main IPS does not overlap other mods' main IPS;
 - **static**: installs `subsdk9` into the game exefs (Eden ignores new NSOs under `load/`);
-- writes the deployed mode to `load/04007EF01F8AE000/.fefw_loader` and prints `[!] loader switched …` when it
+- writes the deployed mode to `load/<title id>/.fefw_loader` and prints `[!] loader switched …` when it
   changes. Both modes write the same folders; the last deploy wins.
 
 In Eden's add-on list make sure `FEFW_RuntimePatcher` and every `FEFW_<Id>_Mod` are enabled.

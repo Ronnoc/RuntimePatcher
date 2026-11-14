@@ -5,7 +5,7 @@ FEFW RuntimePatcher — Emulator Build (runtime patcher + dependent class mods)
 =================================================================================
 One command builds everything an emulator (Eden / Citron) needs:
 
-  release/emulator_ready/04007EF01F8AE000/
+  release/emulator_ready/<title id>/
     FEFW_RuntimePatcher/
       exefs/<main build id>.ips      <- [nro, default] main bootstrap: PLT redirects + nn::ro loader
       romfs/fefw/runtime_patcher.nro|nrr <- [nro, default] the runtime, loaded after boot
@@ -53,7 +53,8 @@ OBJ_DIR = os.path.join(BUILD_DIR, "obj")
 # Game exefs (main, sdk, ... ): read for import validation + sdk offsets, and subsdk9 is installed here.
 # Override with --game-exefs or the FEFW_GAME_EXEFS environment variable.
 GAME_EXEFS = os.environ.get("FEFW_GAME_EXEFS", "")  # your extracted game exefs (main, sdk, ...)
-TITLE_ID = "04007EF01F8AE000"
+# Game title id (16 hex digits): --title-id, $FEFW_TITLE_ID, or "title_id" in the hooks file / game profile.
+TITLE_ID = None
 with open(os.path.join(FOUNDATION_DIR, "VERSION"), encoding="utf-8") as _f:
     VERSION = _f.read().strip()
 # Game-build-specific values (addresses, hooks): from --game-exefs + --hooks, or a saved --profile.
@@ -65,7 +66,8 @@ _ALL_EXPORTS = None      # every export of the game modules (only with the game 
 _ARGS = None             # parsed command line (profile options), for on-demand profile loading
 RECORDED_IMPORTS = {}    # symbol -> module, for every import of the modules built in this run
 MODS_DIRS = [d for d in os.environ.get("FEFW_MODS_DIR", "").split(os.pathsep) if d] or [os.path.join(FOUNDATION_DIR, "mods")]
-RELEASE_DIR = os.path.join(os.environ.get("FEFW_OUT_DIR") or FOUNDATION_DIR, "release", "emulator_ready", TITLE_ID)
+OUT_ROOT = os.environ.get("FEFW_OUT_DIR") or FOUNDATION_DIR
+RELEASE_DIR = None  # <out root>/release/emulator_ready/<title id>, set once the title id is known
 FOUNDATION_PKG = "FEFW_RuntimePatcher"   # emulator add-on folder name
 NRO_BASENAME = "runtime_patcher"         # romfs/fefw/runtime_patcher.nro + .nrr
 MODULE_NAME = "subsdk9"
@@ -322,7 +324,7 @@ def link(lld: str, objs, out_elf: str):
     if LOADER == "nro":
         # every entry point the main bootstrap looks up by name (PLT redirects + mid-function hooks)
         exports = ([exp for _imp, exp in nro_bootstrap.PLT_HOOKS] +
-                   [name for name, _va, _insn in PROFILE["mid_hooks"]] + ["fefw_nx_module_init"])
+                   nro_bootstrap.mid_hook_exports(PROFILE["mid_hooks"]) + ["fefw_nx_module_init"])
     else:
         exports = ["_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "_ZN2nn2fs8ReadFileENS0_10FileHandleElPvm",
                    "_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm", "_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE",
@@ -445,6 +447,9 @@ def generate_headers():
         f.write("// Generated from the game profile. Do not edit.\n#pragma once\n")
         for k, v in sorted(PROFILE["game"].items()):
             f.write(f"#define FEFW_GAME_{k} 0x{v:x}ull\n")
+        names = "".join(f'"{name}", ' for name, _va, _insn in PROFILE["mid_hooks"])
+        f.write(f"#define FEFW_MAX_MID_HOOKS {nro_bootstrap.MAX_MID_HOOKS}\n")
+        f.write(f'#define FEFW_MID_HOOK_NAMES {names}""\n')
 
 
 def load_profile(args):
@@ -465,6 +470,18 @@ def load_profile(args):
     else:
         raise SystemExit("[!] no game profile: pass --profile <file> (or FEFW_GAME_PROFILE), or --game-exefs <dir> "
                          "with --hooks <file> (or FEFW_GAME_HOOKS)")
+
+
+def resolve_title_id(args) -> str:
+    tid = args.title_id or os.environ.get("FEFW_TITLE_ID")
+    if not tid:
+        if PROFILE is None and (args.profile or PROFILE_SPEC or args.hooks or HOOKS_FILE):
+            load_profile(args)
+        tid = (PROFILE or {}).get("title_id")
+    if not tid or not re.fullmatch(r"[0-9A-Fa-f]{16}", tid):
+        raise SystemExit("[!] game title id unknown or invalid: pass --title-id, set FEFW_TITLE_ID, or add "
+                         '"title_id" to the hooks file')
+    return tid.upper()
 
 
 def save_recorded_profile():
@@ -770,20 +787,23 @@ def main():
     ap.add_argument("--hooks", help="game hooks file used with --game-exefs (default: $FEFW_GAME_HOOKS)")
     ap.add_argument("--profile", help="saved game profile, file or encoded text (default: $FEFW_GAME_PROFILE); "
                                       "replaces --game-exefs/--hooks")
+    ap.add_argument("--title-id", help="game title id, 16 hex digits (default: $FEFW_TITLE_ID, else the game "
+                                       "profile / hooks file)")
     ap.add_argument("--clean", action="store_true", help="remove build/nx before building")
     ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4)
     args = ap.parse_args()
-    global GAME_EXEFS, LOADER, MODS_DIRS, RELEASE_DIR, _ARGS
+    global GAME_EXEFS, LOADER, MODS_DIRS, RELEASE_DIR, TITLE_ID, _ARGS
     _ARGS = args
     if args.mods_dir:
         MODS_DIRS = [os.path.abspath(d) for d in args.mods_dir]
-    if args.out_dir:
-        RELEASE_DIR = os.path.join(os.path.abspath(args.out_dir), "release", "emulator_ready", TITLE_ID)
     LOADER = "static" if args.target == "probe" else args.loader  # the NRO probe runs inside static subsdk9
     if args.game_exefs:
         GAME_EXEFS = os.path.abspath(args.game_exefs)
     if args.target in ("all", "foundation", "probe") or args.deploy:
         load_profile(args)
+    TITLE_ID = resolve_title_id(args)
+    RELEASE_DIR = os.path.join(os.path.abspath(args.out_dir) if args.out_dir else OUT_ROOT,
+                               "release", "emulator_ready", TITLE_ID)
 
     if args.clean and os.path.isdir(BUILD_DIR):
         shutil.rmtree(BUILD_DIR)

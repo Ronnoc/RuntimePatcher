@@ -75,7 +75,7 @@ jobs:
 
       - name: Package
         run: |
-          pkg="out/release/emulator_ready/04007EF01F8AE000"
+          pkg="$(echo out/release/emulator_ready/*)"
           cp LICENSE LEGAL.md THIRD_PARTY_NOTICES.md "$pkg/FEFW_RuntimePatcher/"
           (cd "$pkg" && 7z a -tzip "$GITHUB_WORKSPACE/FEFW_RuntimePatcher-$VERSION.zip" FEFW_RuntimePatcher > /dev/null)
           git archive --format=zip --prefix="RuntimePatcher-$VERSION/" -o "RuntimePatcher-$VERSION-src.zip" HEAD
@@ -93,7 +93,7 @@ jobs:
           {
             echo
             echo "### Install"
-            echo "Unzip \`FEFW_RuntimePatcher-$VERSION.zip\` into \`<emulator>/load/04007EF01F8AE000/\` and enable"
+            echo "Unzip \`FEFW_RuntimePatcher-$VERSION.zip\` into \`<emulator>/load/<title id>/\` and enable"
             echo "\`FEFW_RuntimePatcher\` in the emulator's add-on list. Built for one game version; see the README."
           } >> notes.md
 

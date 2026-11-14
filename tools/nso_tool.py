@@ -262,7 +262,7 @@ def main():
     n = sub.add_parser("mknrr")
     n.add_argument("out")
     n.add_argument("nro", nargs="+")
-    n.add_argument("--program-id", default="04007EF01F8AE000")
+    n.add_argument("--program-id", required=True, help="game title id (16 hex digits)")
     n.add_argument("--format", type=int, default=1, choices=[0, 1])
     n.set_defaults(fn=cmd_mknrr)
     args = ap.parse_args()

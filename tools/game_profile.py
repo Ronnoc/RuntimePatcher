@@ -18,6 +18,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import struct
 import sys
 import zlib
@@ -32,10 +33,18 @@ def _hex(v):
     return int(v, 0) if isinstance(v, str) else int(v)
 
 
+MAX_MID_HOOKS = 16  # number of fefw_mid_<k> entry points in the runtime
+
+
 def load_hooks(path):
     with open(path, encoding="utf-8") as f:
         h = json.load(f)
+    names = [e["name"] for e in h.get("mid_hooks", [])]
+    bad = [n for n in names if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", n)]
+    if bad or len(names) > MAX_MID_HOOKS:
+        raise SystemExit(f"[!] {path}: mid hook names must be identifiers and at most {MAX_MID_HOOKS} hooks: {bad}")
     return {
+        "title_id": h.get("title_id"),
         "mid_hooks": [[e["name"], _hex(e["va"]), _hex(e["insn"])] for e in h.get("mid_hooks", [])],
         "game": {k: _hex(v) for k, v in h.get("game", {}).items()},
     }
@@ -67,6 +76,7 @@ def from_exefs(exefs, hooks, sdk_symbols):
         "schema": SCHEMA,
         "main": main,
         "sdk": {"mod0": struct.unpack_from("<I", img, 4)[0], "syms": {n: found[n] for n in sdk_symbols}},
+        "title_id": hooks["title_id"],
         "mid_hooks": hooks["mid_hooks"],
         "game": hooks["game"],
         "exports": {},

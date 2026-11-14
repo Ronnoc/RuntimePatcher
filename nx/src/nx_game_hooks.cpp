@@ -119,30 +119,47 @@ int register_system_menu_provider(FefwMenuProviderFn fn, void* user) {
     return ok;
 }
 
-constexpr uint32_t kMaxMidHookIds = 8;
+// Mid-function hook slots: slot k is the k-th `mid_hooks` entry of the game profile, entered through the export
+// fefw_mid_<k>. Names (FEFW_MID_HOOK_NAMES) come from the profile, so no hook site is known to this code.
+constexpr int kMidSlots = FEFW_MAX_MID_HOOKS;
+constexpr int kCallbacksPerSlot = 4;
+const char* const kMidHookNames[] = {FEFW_MID_HOOK_NAMES};
+constexpr int kMidHookCount = static_cast<int>(sizeof(kMidHookNames) / sizeof(kMidHookNames[0])) - 1;  // last: ""
+static_assert(kMidHookCount <= kMidSlots, "game profile has more mid hooks than slots");
 struct MidHook {
     FefwMidHookFn fn;
     void* user;
 };
-MidHook g_mid_hooks[kMaxMidHookIds][4];
-int g_mid_hook_count[kMaxMidHookIds];
+MidHook g_mid_hooks[kMidSlots][kCallbacksPerSlot];
+int g_mid_hook_count[kMidSlots];
 
-int register_mid_hook(uint32_t id, FefwMidHookFn fn, void* user) {
-    if (id >= kMaxMidHookIds || !fn) return 0;
+int register_mid_hook(const char* name, FefwMidHookFn fn, void* user) {
+    if (!name || !fn) return 0;
+    int added = 0;
     lock(&g_reg_lock);
-    int n = g_mid_hook_count[id];
-    int ok = n < 4;
-    if (ok) {
-        g_mid_hooks[id][n] = {fn, user};
-        __atomic_store_n(&g_mid_hook_count[id], n + 1, __ATOMIC_RELEASE);
+    for (int k = 0; k < kMidHookCount; ++k) {
+        int n = g_mid_hook_count[k];
+        if (strcmp(kMidHookNames[k], name) != 0 || n >= kCallbacksPerSlot) continue;
+        g_mid_hooks[k][n] = {fn, user};
+        __atomic_store_n(&g_mid_hook_count[k], n + 1, __ATOMIC_RELEASE);
+        ++added;
     }
     unlock(&g_reg_lock);
-    return ok;
+    return added > 0;
 }
 
-void run_mid_hooks(uint32_t id, uint64_t* ctx) {
-    int n = __atomic_load_n(&g_mid_hook_count[id], __ATOMIC_ACQUIRE);
-    for (int i = 0; i < n; ++i) g_mid_hooks[id][i].fn(g_mid_hooks[id][i].user, ctx);
+void run_mid_hooks(int slot, uint64_t* ctx) {
+    int n = __atomic_load_n(&g_mid_hook_count[slot], __ATOMIC_ACQUIRE);
+    for (int i = 0; i < n; ++i) g_mid_hooks[slot][i].fn(g_mid_hooks[slot][i].user, ctx);
+}
+
+// The System menu service: the profile's "system_menu" hook site, where the menu container is in register
+// FEFW_GAME_SYSTEM_MENU_REG.
+void on_system_menu(void*, uint64_t* ctx) {
+    if (!main_base() || !g_menu_ok) return;
+    void* menu = reinterpret_cast<void*>(ctx[FEFW_GAME_SYSTEM_MENU_REG]);
+    int n = __atomic_load_n(&g_menu_provider_count, __ATOMIC_ACQUIRE);
+    for (int i = 0; i < n; ++i) g_menu_providers[i].fn(g_menu_providers[i].user, menu);
 }
 
 int register_frame_callback(FefwFrameFn fn, void* user) {
@@ -328,6 +345,7 @@ void fefw_nx::load_plugins(const char* mount, PluginReadFn read_file, PluginList
     list.count = 0;
     if (!list_dir(dir, &collect_nro, &list) || list.count == 0) return;
 
+    register_mid_hook("system_menu", &on_system_menu, nullptr);
     g_api.version = FEFW_PLUGIN_API_VERSION;
     g_api.size = sizeof(FefwApi);
     g_api.main_base = main_base();
@@ -421,35 +439,12 @@ FEFW_EXPORT void fefw_hid_GetNpadStateFullKey(nn::hid::NpadFullKeyState* s, cons
 }
 #endif
 
-// Mid-function hook: the System menu has just received its last native row.
-// ctx[0..30] = x0..x30 at the hook site (written back on return); the menu container is x19.
-FEFW_EXPORT void fefw_hook_system_menu(uint64_t* ctx) {
-    if (!main_base() || !g_menu_ok) return;
-    void* menu = reinterpret_cast<void*>(ctx[19]);
-    int n = __atomic_load_n(&g_menu_provider_count, __ATOMIC_ACQUIRE);
-    for (int i = 0; i < n; ++i) g_menu_providers[i].fn(g_menu_providers[i].user, menu);
-}
-
-// Mid-function hook: hub breakable hit gate returns w19.
-FEFW_EXPORT void fefw_hook_hit_gate(uint64_t* ctx) { run_mid_hooks(FEFW_MID_HUB_HIT_GATE, ctx); }
-
-// Mid-function hook: a hub talk window is created; x0 = label string.
-FEFW_EXPORT void fefw_hook_talk_window(uint64_t* ctx) { run_mid_hooks(FEFW_MID_TALK_WINDOW, ctx); }
-
-// Mid-function hook: after a hub talk event.
-FEFW_EXPORT void fefw_hook_post_talk(uint64_t* ctx) { run_mid_hooks(FEFW_MID_POST_TALK, ctx); }
-
-// Mid-function hook: per-unit battle EXP; w0 = EXP, x19 = Unit*.
-FEFW_EXPORT void fefw_hook_battle_exp(uint64_t* ctx) { run_mid_hooks(FEFW_MID_BATTLE_EXP, ctx); }
-
-// Mid-function hooks in the chest / loot access callbacks: x24 = player.
-FEFW_EXPORT void fefw_hook_pickup_camera_loot(uint64_t* ctx) { run_mid_hooks(FEFW_MID_PICKUP_CAMERA, ctx); }
-FEFW_EXPORT void fefw_hook_pickup_camera_chest(uint64_t* ctx) { run_mid_hooks(FEFW_MID_PICKUP_CAMERA, ctx); }
-
-// Mid-function hook in the loot access callback: x1 = hub script function name about to run.
-FEFW_EXPORT void fefw_hook_pickup_script_loot(uint64_t* ctx) { run_mid_hooks(FEFW_MID_PICKUP_SCRIPT, ctx); }
-
-// Mid-function hook at the hub loot item gain call site.
-FEFW_EXPORT void fefw_hook_loot_gain_call(uint64_t* ctx) { run_mid_hooks(FEFW_MID_LOOT_GAIN_CALL, ctx); }
+// Mid-function hook entry points, one per profile slot (the bootstrap looks them up by name).
+#define FEFW_MID_ENTRY(k) \
+    FEFW_EXPORT void fefw_mid_##k(uint64_t* ctx) { if ((k) < kMidHookCount) run_mid_hooks((k), ctx); }
+FEFW_MID_ENTRY(0) FEFW_MID_ENTRY(1) FEFW_MID_ENTRY(2) FEFW_MID_ENTRY(3) FEFW_MID_ENTRY(4) FEFW_MID_ENTRY(5)
+FEFW_MID_ENTRY(6) FEFW_MID_ENTRY(7) FEFW_MID_ENTRY(8) FEFW_MID_ENTRY(9) FEFW_MID_ENTRY(10) FEFW_MID_ENTRY(11)
+FEFW_MID_ENTRY(12) FEFW_MID_ENTRY(13) FEFW_MID_ENTRY(14) FEFW_MID_ENTRY(15)
+#undef FEFW_MID_ENTRY
 
 }  // extern "C"
