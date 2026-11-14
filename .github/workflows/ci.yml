@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  host:
+    name: Host library + unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build/host -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build/host --config Release --parallel
+      - name: Unit tests
+        run: ctest --test-dir build/host -C Release --output-on-failure
+
+  tools:
+    name: Python tools
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Byte-compile
+        run: python -m compileall -q tools
+      - name: CLI smoke test
+        run: |
+          python tools/build_emulator_mod.py --help > /dev/null
+          python tools/nso_tool.py --help > /dev/null
+      - name: VERSION is semver
+        run: grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' VERSION

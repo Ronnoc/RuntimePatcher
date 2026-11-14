@@ -1,0 +1,23 @@
+# build outputs
+/build/
+/release/
+# fetched dependencies (python tools/fetch_third_party.py)
+/third_party/
+# python
+__pycache__/
+*.pyc
+# editor / OS
+.vs/
+.vscode/
+*.swp
+Thumbs.db
+.DS_Store
+
+# game dumps / keys - never commit
+*.nsp
+*.xci
+*.nca
+*.keys
+prod.keys
+title.keys
+/mods/
