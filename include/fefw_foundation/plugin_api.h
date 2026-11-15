@@ -19,7 +19,9 @@
 extern "C" {
 #endif
 
-#define FEFW_PLUGIN_API_VERSION 4u
+// Fields appended after version 3 don't bump the version (released plugins check it for equality); find them via
+// `size` instead.
+#define FEFW_PLUGIN_API_VERSION 3u
 
 // nn::hid::NpadButton bits (subset).
 #define FEFW_BUTTON_A (1ull << 0)
@@ -90,7 +92,7 @@ typedef struct FefwApi {
     // of the plugin's own. Check `size` before calling; without it, call the address directly.
     uint64_t (*call_game)(uintptr_t addr, const uint64_t* args, int nargs);
 
-    // (version 4) Called on the game thread (from the frame tick) once the game has destroyed every plugin menu row,
+    // (appended to version 3; check `size`) Called on the game thread (from the frame tick) once the game has destroyed every plugin menu row,
     // i.e. the menu that held them, root rows included, is closed. Use it to start something chosen in the menu only
     // after the menu is gone, so the two never take input together. Check `size` before calling.
     int (*register_menu_closed_callback)(FefwMenuClosedFn fn, void* user);
