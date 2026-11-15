@@ -111,6 +111,23 @@ int g_menu_provider_count = 0;
 FrameCallback g_frame_callbacks[kMaxCallbacks];
 int g_frame_callback_count = 0;
 
+struct MenuClosedCallback {
+    FefwMenuClosedFn fn;
+    void* user;
+};
+MenuClosedCallback g_menu_closed[kMaxCallbacks];
+int g_menu_closed_count = 0;
+int g_live_rows = 0;            // plugin menu rows the game hasn't destroyed yet (game thread only)
+int g_menu_closed_pending = 0;  // set when g_live_rows reaches 0; callbacks run from the next frame tick
+
+int register_menu_closed_callback(FefwMenuClosedFn fn, void* user) {
+    lock(&g_reg_lock);
+    int ok = fn && g_menu_closed_count < kMaxCallbacks;
+    if (ok) g_menu_closed[g_menu_closed_count++] = {fn, user};
+    unlock(&g_reg_lock);
+    return ok;
+}
+
 int register_system_menu_provider(FefwMenuProviderFn fn, void* user) {
     lock(&g_reg_lock);
     int ok = g_menu_provider_count < kMaxCallbacks;
@@ -205,6 +222,10 @@ void frame_tick() {
         if (f) __atomic_store_n(&g_inject_frames, f - 1, __ATOMIC_RELEASE);
         int n = __atomic_load_n(&g_frame_callback_count, __ATOMIC_ACQUIRE);
         for (int i = 0; i < n; ++i) g_frame_callbacks[i].fn(g_frame_callbacks[i].user, g_frame);
+        if (__atomic_exchange_n(&g_menu_closed_pending, 0, __ATOMIC_ACQ_REL)) {
+            int m = __atomic_load_n(&g_menu_closed_count, __ATOMIC_ACQUIRE);
+            for (int i = 0; i < m; ++i) g_menu_closed[i].fn(g_menu_closed[i].user);
+        }
     }
     __atomic_store_n(&g_tick_busy, 0, __ATOMIC_RELEASE);
 }
@@ -244,6 +265,25 @@ int item_confirm(PluginMenuItem* item) {
 
 int item_step(PluginMenuItem*, int) { return 0; }
 
+// Destructor slots 0 (complete) and 1 (deleting) of the cloned vtable: count the row out, then run the game's own.
+using ItemDtor = void (*)(PluginMenuItem*);
+ItemDtor g_item_dtor[2];
+
+void row_destroyed() {
+    if (__atomic_sub_fetch(&g_live_rows, 1, __ATOMIC_ACQ_REL) == 0)
+        __atomic_store_n(&g_menu_closed_pending, 1, __ATOMIC_RELEASE);
+}
+
+void item_dtor_complete(PluginMenuItem* item) {
+    row_destroyed();
+    g_item_dtor[0](item);
+}
+
+void item_dtor_deleting(PluginMenuItem* item) {
+    row_destroyed();
+    g_item_dtor[1](item);  // frees `item`
+}
+
 void* menu_add_entry(void* menu, const FefwMenuEntry* entry) {
     if (!menu || !entry || !g_menu_ok) return nullptr;
     void* heap = **reinterpret_cast<void***>(main_base() + kUiHeapGot);
@@ -257,6 +297,11 @@ void* menu_add_entry(void* menu, const FefwMenuEntry* entry) {
     vt[kVtConfirm / 8] = reinterpret_cast<uint64_t>(&item_confirm);
     vt[kVtRight / 8] = reinterpret_cast<uint64_t>(&item_step);
     vt[kVtLeft / 8] = reinterpret_cast<uint64_t>(&item_step);
+    g_item_dtor[0] = reinterpret_cast<ItemDtor>(vt[0]);
+    g_item_dtor[1] = reinterpret_cast<ItemDtor>(vt[1]);
+    vt[0] = reinterpret_cast<uint64_t>(&item_dtor_complete);
+    vt[1] = reinterpret_cast<uint64_t>(&item_dtor_deleting);
+    __atomic_add_fetch(&g_live_rows, 1, __ATOMIC_ACQ_REL);
     *reinterpret_cast<uint64_t**>(item->native) = vt;
     *reinterpret_cast<uint32_t*>(item->native + 0x50) = 0x00010101;  // visible / enabled flags
     item->owner = item;
@@ -368,6 +413,7 @@ void fefw_nx::load_plugins(const char* mount, PluginReadFn read_file, PluginList
     g_api.register_mid_hook = &register_mid_hook;
     g_api.get_language = &api_get_language;
     g_api.call_game = &api_call_game;
+    g_api.register_menu_closed_callback = &register_menu_closed_callback;
 
 #if FEFW_NX_NRO
     auto ro_init = static_cast<Result (*)()>(nullptr);

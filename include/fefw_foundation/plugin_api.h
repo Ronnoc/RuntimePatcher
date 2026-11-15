@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define FEFW_PLUGIN_API_VERSION 3u
+#define FEFW_PLUGIN_API_VERSION 4u
 
 // nn::hid::NpadButton bits (subset).
 #define FEFW_BUTTON_A (1ull << 0)
@@ -44,6 +44,7 @@ typedef struct FefwMenuEntry {
 typedef void (*FefwMenuProviderFn)(void* user, void* menu);  // append rows to `menu`
 typedef void (*FefwFrameFn)(void* user, uint64_t frame);     // once per game frame, game thread
 typedef void (*FefwMidHookFn)(void* user, uint64_t* ctx);    // ctx[0..30] = x0..x30
+typedef void (*FefwMenuClosedFn)(void* user);               // the menu holding plugin rows has closed
 
 typedef struct FefwApi {
     uint32_t version;  // FEFW_PLUGIN_API_VERSION
@@ -88,6 +89,11 @@ typedef struct FefwApi {
     // only through call_game runs on both. Call it from a callback the runtime made (frame, menu, hook), not from a thread
     // of the plugin's own. Check `size` before calling; without it, call the address directly.
     uint64_t (*call_game)(uintptr_t addr, const uint64_t* args, int nargs);
+
+    // (version 4) Called on the game thread (from the frame tick) once the game has destroyed every plugin menu row,
+    // i.e. the menu that held them, root rows included, is closed. Use it to start something chosen in the menu only
+    // after the menu is gone, so the two never take input together. Check `size` before calling.
+    int (*register_menu_closed_callback)(FefwMenuClosedFn fn, void* user);
 } FefwApi;
 
 typedef int (*FefwPluginMainFn)(const FefwApi* api);
