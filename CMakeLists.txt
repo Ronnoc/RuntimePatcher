@@ -22,6 +22,7 @@ add_library(fefw_class_foundation STATIC
     src/vfs_overlay.cpp
 )
 
+set_target_properties(fefw_class_foundation PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(fefw_class_foundation PUBLIC FEFW_VERSION="${FEFW_VERSION}")
 target_include_directories(fefw_class_foundation PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
@@ -66,6 +67,14 @@ option(FEFW_BUILD_TOOLS "Build fefw_table_dump" ON)
 if(FEFW_BUILD_TOOLS)
     add_executable(fefw_table_dump tools/table_dump.cpp)
     target_link_libraries(fefw_table_dump PRIVATE fefw_class_foundation)
+endif()
+
+# Code-mod DLL for PC recompilation runtimes (mods/<name>/exefs/*.dll, see dll/nxmod_abi.h)
+option(FEFW_BUILD_NXMOD_DLL "Build fefw_runtime_patcher (code-mod DLL)" ON)
+if(FEFW_BUILD_NXMOD_DLL)
+    add_library(fefw_runtime_patcher SHARED dll/nxmod_runtime_patcher.cpp)
+    target_link_libraries(fefw_runtime_patcher PRIVATE fefw_class_foundation)
+    set_target_properties(fefw_runtime_patcher PROPERTIES PREFIX "" CXX_VISIBILITY_PRESET hidden)
 endif()
 
 option(FEFW_RUNTIME_BUILD_TESTS "Build the runtime unit tests" ${PROJECT_IS_TOP_LEVEL})

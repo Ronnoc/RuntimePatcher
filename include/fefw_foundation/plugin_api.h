@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define FEFW_PLUGIN_API_VERSION 2u
+#define FEFW_PLUGIN_API_VERSION 3u
 
 // nn::hid::NpadButton bits (subset).
 #define FEFW_BUTTON_A (1ull << 0)
@@ -81,6 +81,13 @@ typedef struct FefwApi {
     // "EUfr", ...), taken from the last message file the game opened. "" until the game has loaded any message
     // file. Follows in-game language changes. Check `size` before calling.
     const char* (*get_language)(void);
+
+    // (version 3) Calls the game function at absolute address `addr` with x0..x(nargs-1) = args[0..nargs-1] (integer and
+    // pointer arguments only, nargs <= 8) and returns x0. On the Switch this is a plain call; hosts where game code does not
+    // run natively (a PC recompilation) route it through their own call mechanism, so a plugin that calls game functions
+    // only through call_game runs on both. Call it from a callback the runtime made (frame, menu, hook), not from a thread
+    // of the plugin's own. Check `size` before calling; without it, call the address directly.
+    uint64_t (*call_game)(uintptr_t addr, const uint64_t* args, int nargs);
 } FefwApi;
 
 typedef int (*FefwPluginMainFn)(const FefwApi* api);

@@ -71,6 +71,21 @@ To add a new class, follow [`docs/ADDING_A_NEW_CLASS.md`](docs/ADDING_A_NEW_CLAS
 
 ---
 
+## PC recompilation runtimes (DLL)
+
+On PC runtimes that load code mods as DLLs from a mod's `exefs/` folder (exports `nxmod_early` / `nxmod_init`,
+interface version 3 or later), the data overlay runs as `fefw_runtime_patcher.dll` instead of the NRO loader:
+
+```
+cmake -S . -B build/host && cmake --build build/host --config Release   # -> build/host/Release/fefw_runtime_patcher.dll
+```
+
+Install it as `<mods>/FEFW_RuntimePatcher/exefs/fefw_runtime_patcher.dll` and put the class mods beside it as usual
+(`<mods>/<mod>/romfs/GameData/Classes/<id>.delta`, or `manifest.json` next to `romfs/`). At load it scans every
+installed mod's `romfs/` and registers a file edit for each file the mods patch; the runtime hands over each file as
+it stands (the game's or another RomFS mod's) and serves the patched bytes. No game profile is needed.
+Native plugins (`romfs/fefw/plugins/*.nro`) are Switch code and are not loaded on PC.
+
 ## Repository layout
 
 ```

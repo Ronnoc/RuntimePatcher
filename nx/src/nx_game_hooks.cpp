@@ -297,6 +297,14 @@ char g_language[8] = "";
 
 const char* api_get_language() { return g_language; }
 
+uint64_t api_call_game(uintptr_t addr, const uint64_t* args, int nargs) {
+    uint64_t a[8] = {};
+    for (int i = 0; i < nargs && i < 8; ++i) a[i] = args[i];
+    // AAPCS64: unused argument registers are ignored by the callee
+    using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+    return reinterpret_cast<Fn>(addr)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
+}
+
 FefwApi g_api{};
 
 using Result = uint32_t;
@@ -359,6 +367,7 @@ void fefw_nx::load_plugins(const char* mount, PluginReadFn read_file, PluginList
     g_api.is_readable = &api_is_readable;
     g_api.register_mid_hook = &register_mid_hook;
     g_api.get_language = &api_get_language;
+    g_api.call_game = &api_call_game;
 
 #if FEFW_NX_NRO
     auto ro_init = static_cast<Result (*)()>(nullptr);
