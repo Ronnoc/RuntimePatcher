@@ -4,6 +4,8 @@ All notable changes to this project are documented here. Versions follow [Semant
 
 ## [Unreleased]
 
+- Smaller NRO bootstrap: mid hook export names (`fefw_mid_<k>`) are built at run time instead of stored per hook,
+  and the loader is compiled for size, so more mid hook sites fit into the free tail of the game's code segment.
 - Plugin API version 3: `call_game(addr, args, nargs)` calls a game function. On the Switch it is a plain call; a host
   where game code does not run natively routes it through its own call mechanism, so plugins that call the game only
   through it can be built for both.
