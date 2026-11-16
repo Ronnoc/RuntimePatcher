@@ -96,6 +96,11 @@ typedef struct FefwApi {
     // i.e. the menu that held them, root rows included, is closed. Use it to start something chosen in the menu only
     // after the menu is gone, so the two never take input together. Check `size` before calling.
     int (*register_menu_closed_callback)(FefwMenuClosedFn fn, void* user);
+
+    // (appended to version 3; check `size`) As call_game, for a game function that returns a struct by value through the
+    // indirect-result register (x8), e.g. a std::string: x8 = `result`, which must be large enough for that struct.
+    // Returns x0 after the call. Same rules as call_game.
+    uint64_t (*call_game_sret)(uintptr_t addr, void* result, const uint64_t* args, int nargs);
 } FefwApi;
 
 typedef int (*FefwPluginMainFn)(const FefwApi* api);

@@ -120,6 +120,29 @@ int g_menu_closed_count = 0;
 int g_live_rows = 0;            // plugin menu rows the game hasn't destroyed yet (game thread only)
 int g_menu_closed_pending = 0;  // set when g_live_rows reaches 0; callbacks run from the next frame tick
 
+// call_game with x8 = result (AAPCS64 indirect result location).
+uint64_t api_call_game_sret(uintptr_t addr, void* result, const uint64_t* args, int nargs) {
+    uint64_t a[8] = {};
+    for (int i = 0; i < nargs && i < 8; ++i) a[i] = args[i];
+    register uint64_t x0 asm("x0") = a[0];
+    register uint64_t x1 asm("x1") = a[1];
+    register uint64_t x2 asm("x2") = a[2];
+    register uint64_t x3 asm("x3") = a[3];
+    register uint64_t x4 asm("x4") = a[4];
+    register uint64_t x5 asm("x5") = a[5];
+    register uint64_t x6 asm("x6") = a[6];
+    register uint64_t x7 asm("x7") = a[7];
+    register uint64_t x8 asm("x8") = reinterpret_cast<uint64_t>(result);
+    register uint64_t fn asm("x16") = addr;
+    asm volatile("blr x16"
+                 : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x5), "+r"(x6), "+r"(x7), "+r"(x8), "+r"(fn)
+                 :
+                 : "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x17", "x30", "v0", "v1", "v2", "v3", "v4", "v5",
+                   "v6", "v7", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23", "v24", "v25", "v26", "v27",
+                   "v28", "v29", "v30", "v31", "cc", "memory");
+    return x0;
+}
+
 int register_menu_closed_callback(FefwMenuClosedFn fn, void* user) {
     lock(&g_reg_lock);
     int ok = fn && g_menu_closed_count < kMaxCallbacks;
@@ -414,6 +437,7 @@ void fefw_nx::load_plugins(const char* mount, PluginReadFn read_file, PluginList
     g_api.get_language = &api_get_language;
     g_api.call_game = &api_call_game;
     g_api.register_menu_closed_callback = &register_menu_closed_callback;
+    g_api.call_game_sret = &api_call_game_sret;
 
 #if FEFW_NX_NRO
     auto ro_init = static_cast<Result (*)()>(nullptr);
