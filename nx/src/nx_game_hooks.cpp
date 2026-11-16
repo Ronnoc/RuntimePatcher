@@ -17,6 +17,7 @@
 #include "fefw_foundation/plugin_api.h"
 #include "fefw_game_offsets.h"
 #include "nx_runtime.h"
+#include "nx_settings.h"
 
 namespace nn {
 namespace hid {
@@ -249,6 +250,7 @@ void frame_tick() {
             int m = __atomic_load_n(&g_menu_closed_count, __ATOMIC_ACQUIRE);
             for (int i = 0; i < m; ++i) g_menu_closed[i].fn(g_menu_closed[i].user);
         }
+        fefw_nx::settings_flush();
     }
     __atomic_store_n(&g_tick_busy, 0, __ATOMIC_RELEASE);
 }
@@ -438,6 +440,8 @@ void fefw_nx::load_plugins(const char* mount, PluginReadFn read_file, PluginList
     g_api.call_game = &api_call_game;
     g_api.register_menu_closed_callback = &register_menu_closed_callback;
     g_api.call_game_sret = &api_call_game_sret;
+    g_api.settings_get = &fefw_nx::settings_get;
+    g_api.settings_set = &fefw_nx::settings_set;
 
 #if FEFW_NX_NRO
     auto ro_init = static_cast<Result (*)()>(nullptr);

@@ -4,6 +4,8 @@ All notable changes to this project are documented here. Versions follow [Semant
 
 ## [Unreleased]
 
+- Plugin settings: `settings_get` / `settings_set` (appended to plugin API version 3) keep plugin options across
+  boots. The Switch runtime stores them in the game's save data (`save:/fefw_settings.ini`).
 - Smaller NRO bootstrap: mid hook export names (`fefw_mid_<k>`) are built at run time instead of stored per hook,
   and the loader is compiled for size, so more mid hook sites fit into the free tail of the game's code segment.
 - Plugin API version 3: `call_game(addr, args, nargs)` calls a game function. On the Switch it is a plain call; a host

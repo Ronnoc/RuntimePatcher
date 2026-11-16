@@ -101,7 +101,19 @@ typedef struct FefwApi {
     // indirect-result register (x8), e.g. a std::string: x8 = `result`, which must be large enough for that struct.
     // Returns x0 after the call. Same rules as call_game.
     uint64_t (*call_game_sret)(uintptr_t addr, void* result, const uint64_t* args, int nargs);
+
+    // (appended to version 3; check `size`) Persistent settings shared by all plugins, kept across game boots. Keys are
+    // plain text without '=' or line breaks; prefix them with the plugin name ("my_plugin.option"). Values are text
+    // (at most 127 bytes; keys at most 63). Where they are stored depends on the host (the Switch runtime: a file in the
+    // game's save data). Game thread only.
+    // settings_get copies the value (NUL-terminated, truncated to out_size) and returns its length, -1 if the key has
+    // no value, or FEFW_SETTINGS_NOT_READY while the storage is not available yet (early boot: ask again later).
+    int (*settings_get)(const char* key, char* out, size_t out_size);
+    // Stores the value and writes it out (later, if the storage is not available yet). Returns 0, or -1 on a bad key.
+    int (*settings_set)(const char* key, const char* value);
 } FefwApi;
+
+#define FEFW_SETTINGS_NOT_READY (-2)
 
 typedef int (*FefwPluginMainFn)(const FefwApi* api);
 
