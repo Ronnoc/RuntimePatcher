@@ -31,6 +31,7 @@ void CloseFile(FileHandle);
 uint32_t CreateFile(const char*, int64_t);
 uint32_t GetEntryType(DirectoryEntryType*, const char*);
 uint32_t Commit(const char*);
+bool IsMounted(const char*);
 #endif
 }  // namespace fs
 }  // namespace nn
@@ -56,8 +57,8 @@ int g_failures = 0;  // write attempts that failed; gives up after a few (no log
 
 bool mount_ready() {
 #if FEFW_NX_NRO
-    nn::fs::DirectoryEntryType t{};
-    return nn::fs::GetEntryType(&t, "save:/") == 0;
+    // Not GetEntryType("save:/"): on an unknown mount name nn::fs aborts the game (auto-abort policy).
+    return nn::fs::IsMounted(kMount);
 #else
     return false;
 #endif
@@ -91,8 +92,10 @@ bool ensure_loaded() {
     if (!mount_ready()) return false;
     g_loaded = true;
 #if FEFW_NX_NRO
+    nn::fs::DirectoryEntryType t{};
+    if (nn::fs::GetEntryType(&t, kPath) != 0) return true;  // no file yet (PathNotFound does not abort)
     nn::fs::FileHandle h{};
-    if (nn::fs::OpenFile(&h, kPath, kOpenRead) != 0) return true;  // no file yet
+    if (nn::fs::OpenFile(&h, kPath, kOpenRead) != 0) return true;
     static char buf[kMaxEntries * (kKeyLen + kValueLen + 2)];
     int64_t size = 0;
     size_t got = 0;
@@ -127,7 +130,11 @@ bool write_file() {
     size_t n = 0;
     for (int i = 0; i < g_count; ++i)
         n += snprintf(buf + n, sizeof(buf) - n, "%s=%s\n", g_entries[i].key, g_entries[i].value);
-    nn::fs::CreateFile(kPath, 0);  // fails harmlessly when it exists
+    nn::fs::DirectoryEntryType t{};
+    if (nn::fs::GetEntryType(&t, kPath) != 0 && nn::fs::CreateFile(kPath, 0) != 0) {
+        fefw_nx::log("settings: cannot create %s", kPath);
+        return false;
+    }
     nn::fs::FileHandle h{};
     uint32_t r = nn::fs::OpenFile(&h, kPath, kOpenWrite);
     if (r != 0) {
