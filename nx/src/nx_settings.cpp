@@ -2,8 +2,10 @@
 // FEFW RuntimePatcher — persistent plugin settings (NRO loader only).
 //
 // One small text file in the game's own save data, `<mount>:/fefw_settings.ini`, one `key=value` per line.
-// The game mounts its save data itself; until it has (early boot), reads report "not ready" and writes are kept
-// in memory and written on a later frame. Writes are committed right away (nn::fs::Commit), so the file survives
+// The game mounts its save data only while it reads or writes it (it mounts and unmounts "save" many times). So the
+// file is read the first time the mount is there, and a changed value is kept in memory and written on the first
+// frame the mount is there again (the next time the game touches its save). nn::fs auto-abort is off around every
+// call, so a mount that goes away between the check and the call is a logged error, not a crash. Writes are committed right away (nn::fs::Commit), so the file survives
 // a crash and never waits for the next in-game save. Game thread only (menu / frame callbacks).
 #include <stdint.h>
 #include <stdio.h>
@@ -32,6 +34,7 @@ uint32_t CreateFile(const char*, int64_t);
 uint32_t GetEntryType(DirectoryEntryType*, const char*);
 uint32_t Commit(const char*);
 bool IsMounted(const char*);
+void SetEnabledAutoAbort(bool);
 #endif
 }  // namespace fs
 }  // namespace nn
@@ -54,6 +57,13 @@ int g_count = 0;
 bool g_loaded = false;
 bool g_dirty = false;
 int g_failures = 0;  // write attempts that failed; gives up after a few (no log spam every frame)
+
+struct NoAutoAbort {  // the sdk's ScopedAutoAbortDisabler has no exported destructor
+#if FEFW_NX_NRO
+    NoAutoAbort() { nn::fs::SetEnabledAutoAbort(false); }
+    ~NoAutoAbort() { nn::fs::SetEnabledAutoAbort(true); }
+#endif
+};
 
 bool mount_ready() {
 #if FEFW_NX_NRO
@@ -90,10 +100,18 @@ void put(const char* key, size_t klen, const char* value, size_t vlen) {
 bool ensure_loaded() {
     if (g_loaded) return true;
     if (!mount_ready()) return false;
-    g_loaded = true;
 #if FEFW_NX_NRO
+    NoAutoAbort guard;
     nn::fs::DirectoryEntryType t{};
-    if (nn::fs::GetEntryType(&t, kPath) != 0) return true;  // no file yet (PathNotFound does not abort)
+    uint32_t er = nn::fs::GetEntryType(&t, kPath);
+    if (er != 0 && !mount_ready()) return false;  // unmounted under us: try again later
+    g_loaded = true;
+    if (er != 0) return true;  // no file yet
+#else
+    g_loaded = true;
+#endif
+#if FEFW_NX_NRO
+
     nn::fs::FileHandle h{};
     if (nn::fs::OpenFile(&h, kPath, kOpenRead) != 0) return true;
     static char buf[kMaxEntries * (kKeyLen + kValueLen + 2)];
@@ -126,6 +144,7 @@ bool ensure_loaded() {
 
 bool write_file() {
 #if FEFW_NX_NRO
+    NoAutoAbort guard;
     static char buf[kMaxEntries * (kKeyLen + kValueLen + 2)];
     size_t n = 0;
     for (int i = 0; i < g_count; ++i)
@@ -181,7 +200,8 @@ int fefw_nx::settings_set(const char* key, const char* value) {
 }
 
 void fefw_nx::settings_flush() {
-    if (!g_dirty || g_failures >= 3 || !ensure_loaded()) return;  // before the mount exists: retried each frame
+    // retried each frame until the game has its save mounted again
+    if (!g_dirty || g_failures >= 3 || !ensure_loaded() || !mount_ready()) return;
     if (write_file()) {
         g_dirty = false;
         g_failures = 0;
