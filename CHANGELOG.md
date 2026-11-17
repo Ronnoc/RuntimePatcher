@@ -4,6 +4,8 @@ All notable changes to this project are documented here. Versions follow [Semant
 
 ## [Unreleased]
 
+- Plugin menu rows can take Left / Right: `menu_set_step(item, fn)` (appended to plugin API version 3) calls `fn`
+  with -1 / +1; returning 1 marks the value as changed, as on the game's own setting rows.
 - Plugin settings: `settings_get` / `settings_set` (appended to plugin API version 3) keep plugin options across
   boots. The Switch runtime stores them in the game's save data (`save:/fefw_settings.ini`).
 - Smaller NRO bootstrap: mid hook export names (`fefw_mid_<k>`) are built at run time instead of stored per hook,

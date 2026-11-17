@@ -46,7 +46,8 @@ typedef struct FefwMenuEntry {
 typedef void (*FefwMenuProviderFn)(void* user, void* menu);  // append rows to `menu`
 typedef void (*FefwFrameFn)(void* user, uint64_t frame);     // once per game frame, game thread
 typedef void (*FefwMidHookFn)(void* user, uint64_t* ctx);    // ctx[0..30] = x0..x30
-typedef void (*FefwMenuClosedFn)(void* user);               // the menu holding plugin rows has closed
+typedef void (*FefwMenuClosedFn)(void* user);
+typedef int (*FefwMenuStepFn)(void* user, void* item, int dir);  // Left (-1) / Right (+1) on a row               // the menu holding plugin rows has closed
 
 typedef struct FefwApi {
     uint32_t version;  // FEFW_PLUGIN_API_VERSION
@@ -111,6 +112,11 @@ typedef struct FefwApi {
     int (*settings_get)(const char* key, char* out, size_t out_size);
     // Stores the value and writes it out (later, if the storage is not available yet). Returns 0, or -1 on a bad key.
     int (*settings_set)(const char* key, const char* value);
+
+    // (appended to version 3; check `size`) Makes Left / Right on a row made by menu_add_entry call `fn`, with
+    // `dir` = -1 (Left) or +1 (Right) and the row's FefwMenuEntry::user. Return 1 when the value changed (the game
+    // plays its cursor sound; call menu_refresh(item) to redraw the text), 0 when nothing changed.
+    int (*menu_set_step)(void* item, FefwMenuStepFn fn);
 } FefwApi;
 
 #define FEFW_SETTINGS_NOT_READY (-2)

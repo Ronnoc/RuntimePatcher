@@ -272,6 +272,7 @@ struct PluginMenuItem {
     PluginMenuItem* owner;         // 0xA0: always self
     const FefwMenuEntry* entry;    // 0xA8
     uint64_t table[kUiItemVtableBytes / 8];
+    FefwMenuStepFn step;           // Left / Right, set by menu_set_step
 };
 static_assert(__builtin_offsetof(PluginMenuItem, owner) == 0xA0, "native ConfigMenuItem prefix");
 static_assert(sizeof(PluginMenuItem) <= 0x300, "menu items are allocated as 0x300 bytes");
@@ -288,7 +289,20 @@ int item_confirm(PluginMenuItem* item) {
     return (e && e->confirm) ? e->confirm(e->user, item) : FEFW_MENU_IGNORED;
 }
 
-int item_step(PluginMenuItem*, int) { return 0; }
+// Left / Right slots: (item, bool) -> 1 when the value changed, else 0 (as the game's own setting rows).
+int item_step(PluginMenuItem* item, int dir) {
+    if (item->native[0x52] != 1 || !item->step) return 0;
+    const FefwMenuEntry* e = item->entry;
+    return item->step(e ? e->user : nullptr, item, dir) ? 1 : 0;
+}
+int item_right(PluginMenuItem* item, int) { return item_step(item, 1); }
+int item_left(PluginMenuItem* item, int) { return item_step(item, -1); }
+
+int menu_set_step(void* item, FefwMenuStepFn fn) {
+    if (!item) return -1;
+    static_cast<PluginMenuItem*>(item)->step = fn;
+    return 0;
+}
 
 // Destructor slots 0 (complete) and 1 (deleting) of the cloned vtable: count the row out, then run the game's own.
 using ItemDtor = void (*)(PluginMenuItem*);
@@ -320,8 +334,8 @@ void* menu_add_entry(void* menu, const FefwMenuEntry* entry) {
     uint64_t* vt = item->table + 2;  // skip offset-to-top + typeinfo
     vt[kVtText / 8] = reinterpret_cast<uint64_t>(&item_text);
     vt[kVtConfirm / 8] = reinterpret_cast<uint64_t>(&item_confirm);
-    vt[kVtRight / 8] = reinterpret_cast<uint64_t>(&item_step);
-    vt[kVtLeft / 8] = reinterpret_cast<uint64_t>(&item_step);
+    vt[kVtRight / 8] = reinterpret_cast<uint64_t>(&item_right);
+    vt[kVtLeft / 8] = reinterpret_cast<uint64_t>(&item_left);
     g_item_dtor[0] = reinterpret_cast<ItemDtor>(vt[0]);
     g_item_dtor[1] = reinterpret_cast<ItemDtor>(vt[1]);
     vt[0] = reinterpret_cast<uint64_t>(&item_dtor_complete);
@@ -331,6 +345,7 @@ void* menu_add_entry(void* menu, const FefwMenuEntry* entry) {
     *reinterpret_cast<uint32_t*>(item->native + 0x50) = 0x00010101;  // visible / enabled flags
     item->owner = item;
     item->entry = entry;
+    item->step = nullptr;
     game_fn<void (*)(void*, void*)>(kUiAddItem)(menu, item);
     return item;
 }
@@ -442,6 +457,7 @@ void fefw_nx::load_plugins(const char* mount, PluginReadFn read_file, PluginList
     g_api.call_game_sret = &api_call_game_sret;
     g_api.settings_get = &fefw_nx::settings_get;
     g_api.settings_set = &fefw_nx::settings_set;
+    g_api.menu_set_step = &menu_set_step;
 
 #if FEFW_NX_NRO
     auto ro_init = static_cast<Result (*)()>(nullptr);
