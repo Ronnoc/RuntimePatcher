@@ -443,32 +443,112 @@ bool patch_msbt_archive(const std::vector<uint8_t>& input_bytes,
     // 2b. Keep ATR1 parallel to TXT2 for new labels (sits between LBL1 and TXT2 in FEFW files)
     std::vector<uint8_t> atr1_sec;
     int atr1_pos = find_section(raw, "ATR1");
-    size_t atr1_end = 0;
     if (has_new_labels && atr1_pos > 0 && static_cast<size_t>(atr1_pos) >= lbl1_end &&
         atr1_pos < txt2_pos) {
-        uint32_t atr_size = read_u32(raw.data() + atr1_pos + 4);
-        atr1_end = static_cast<size_t>(atr1_pos) + 16 + ((static_cast<size_t>(atr_size) + 15) & ~size_t{15});
         if (!rebuild_atr1(raw, atr1_pos, num_strings, new_labels, label_to_idx, atr_specs, atr1_sec)) {
             atr1_sec.clear();
         }
     }
 
-    // 3. Assemble full MSBT
+    // 3. Assemble full MSBT. Sections between LBL1 and TXT2 are copied, except ATR1 (rebuilt above) and
+    //    TSY1 (one style index per text entry, extended for new labels so its count matches TXT2).
     std::vector<uint8_t> rebuilt;
     rebuilt.insert(rebuilt.end(), raw.begin(), raw.begin() + lbl1_pos);
     rebuilt.insert(rebuilt.end(), lbl1_sec.begin(), lbl1_sec.end());
-    if (!atr1_sec.empty()) {
-        rebuilt.insert(rebuilt.end(), raw.begin() + static_cast<ptrdiff_t>(lbl1_end), raw.begin() + atr1_pos);
-        rebuilt.insert(rebuilt.end(), atr1_sec.begin(), atr1_sec.end());
-        if (atr1_end < static_cast<size_t>(txt2_pos)) {
-            rebuilt.insert(rebuilt.end(), raw.begin() + static_cast<ptrdiff_t>(atr1_end), raw.begin() + txt2_pos);
+    for (size_t pos = lbl1_end; pos < static_cast<size_t>(txt2_pos);) {
+        if (pos + 16 > static_cast<size_t>(txt2_pos)) {
+            rebuilt.insert(rebuilt.end(), raw.begin() + static_cast<ptrdiff_t>(pos), raw.begin() + txt2_pos);
+            break;
         }
-    } else if (lbl1_end < static_cast<size_t>(txt2_pos)) {
-        rebuilt.insert(rebuilt.end(), raw.begin() + static_cast<ptrdiff_t>(lbl1_end), raw.begin() + txt2_pos);
+        uint32_t sz = read_u32(raw.data() + pos + 4);
+        size_t end = pos + 16 + ((static_cast<size_t>(sz) + 15) & ~size_t{15});
+        if (end > static_cast<size_t>(txt2_pos)) end = static_cast<size_t>(txt2_pos);
+        if (!atr1_sec.empty() && static_cast<int>(pos) == atr1_pos) {
+            rebuilt.insert(rebuilt.end(), atr1_sec.begin(), atr1_sec.end());
+        } else if (has_new_labels && std::memcmp(raw.data() + pos, "TSY1", 4) == 0 &&
+                   sz == num_strings * 4ull) {
+            std::vector<uint8_t> body(raw.begin() + static_cast<ptrdiff_t>(pos + 16),
+                                      raw.begin() + static_cast<ptrdiff_t>(pos + 16 + sz));
+            std::vector<std::pair<uint32_t, std::string>> ordered;
+            for (const auto& l : new_labels) ordered.push_back({label_to_idx.at(l), l});
+            std::sort(ordered.begin(), ordered.end());
+            std::map<uint32_t, uint32_t> freq;  // no template: the most common style in the file
+            uint32_t common = 0;
+            for (uint32_t i = 0; i < num_strings; ++i) {
+                uint32_t v = read_u32(body.data() + i * 4);
+                if (++freq[v] > freq[common] || i == 0) common = v;
+            }
+            for (const auto& [idx, label] : ordered) {
+                (void)idx;
+                uint32_t style = common;
+                if (atr_specs) {
+                    auto sit = atr_specs->find(label);
+                    if (sit != atr_specs->end() && !sit->second.template_label.empty()) {
+                        auto tit = label_to_idx.find(sit->second.template_label);
+                        if (tit != label_to_idx.end() && tit->second < num_strings) {
+                            style = read_u32(body.data() + tit->second * 4);
+                        }
+                    }
+                }
+                append_u32(body, style);
+            }
+            uint32_t unpadded = static_cast<uint32_t>(body.size());
+            body.insert(body.end(), (16 - (body.size() % 16)) % 16, 0xAB);
+            rebuilt.insert(rebuilt.end(), {'T', 'S', 'Y', '1'});
+            append_u32(rebuilt, unpadded);
+            append_u32(rebuilt, 0);
+            append_u32(rebuilt, 0);
+            rebuilt.insert(rebuilt.end(), body.begin(), body.end());
+        } else {
+            rebuilt.insert(rebuilt.end(), raw.begin() + static_cast<ptrdiff_t>(pos),
+                           raw.begin() + static_cast<ptrdiff_t>(end));
+        }
+        pos = end;
     }
     rebuilt.insert(rebuilt.end(), txt2_sec.begin(), txt2_sec.end());
-    if (txt2_end < raw.size()) {
-        rebuilt.insert(rebuilt.end(), raw.begin() + static_cast<ptrdiff_t>(txt2_end), raw.end());
+    // Sections after TXT2 are copied, except AOCM (u16 count + one byte per text entry), which is extended
+    // for new labels like TSY1.
+    for (size_t pos = txt2_end; pos < raw.size();) {
+        if (pos + 16 > raw.size()) {
+            rebuilt.insert(rebuilt.end(), raw.begin() + static_cast<ptrdiff_t>(pos), raw.end());
+            break;
+        }
+        uint32_t sz = read_u32(raw.data() + pos + 4);
+        size_t end = std::min(raw.size(), pos + 16 + ((static_cast<size_t>(sz) + 15) & ~size_t{15}));
+        const uint8_t* b = raw.data() + pos + 16;
+        if (has_new_labels && std::memcmp(raw.data() + pos, "AOCM", 4) == 0 && sz == num_strings + 2ull &&
+            pos + 16 + sz <= raw.size() && (b[0] | (b[1] << 8)) == num_strings) {
+            std::vector<uint8_t> body(b, b + sz);
+            uint32_t n = static_cast<uint32_t>(raw_strings.size());
+            body[0] = static_cast<uint8_t>(n);
+            body[1] = static_cast<uint8_t>(n >> 8);
+            std::vector<std::pair<uint32_t, std::string>> ordered;
+            for (const auto& l : new_labels) ordered.push_back({label_to_idx.at(l), l});
+            std::sort(ordered.begin(), ordered.end());
+            for (const auto& [idx, label] : ordered) {
+                (void)idx;
+                uint8_t v = 0xFF;
+                if (atr_specs) {
+                    auto sit = atr_specs->find(label);
+                    if (sit != atr_specs->end() && !sit->second.template_label.empty()) {
+                        auto tit = label_to_idx.find(sit->second.template_label);
+                        if (tit != label_to_idx.end() && tit->second < num_strings) v = b[2 + tit->second];
+                    }
+                }
+                body.push_back(v);
+            }
+            uint32_t unpadded = static_cast<uint32_t>(body.size());
+            body.insert(body.end(), (16 - (body.size() % 16)) % 16, 0xAB);
+            rebuilt.insert(rebuilt.end(), {'A', 'O', 'C', 'M'});
+            append_u32(rebuilt, unpadded);
+            append_u32(rebuilt, 0);
+            append_u32(rebuilt, 0);
+            rebuilt.insert(rebuilt.end(), body.begin(), body.end());
+        } else {
+            rebuilt.insert(rebuilt.end(), raw.begin() + static_cast<ptrdiff_t>(pos),
+                           raw.begin() + static_cast<ptrdiff_t>(end));
+        }
+        pos = end;
     }
 
     uint32_t total_msbt_size = static_cast<uint32_t>(rebuilt.size());

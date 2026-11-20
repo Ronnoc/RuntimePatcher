@@ -4,6 +4,9 @@ All notable changes to this project are documented here. Versions follow [Semant
 
 ## [Unreleased]
 
+- MSBT patching: adding new labels now also extends the per-message TSY1 (style) and AOCM sections, so their entry
+  counts match TXT2. A new entry takes its template label's values, otherwise the file's most common style.
+  Previously these sections kept the old count, and other tools that validate MSBT files rejected the output.
 - Plugin menu rows can take Left / Right: `menu_set_step(item, fn)` (appended to plugin API version 3) calls `fn`
   with -1 / +1; returning 1 marks the value as changed, as on the game's own setting rows.
 - Plugin settings: `settings_get` / `settings_set` (appended to plugin API version 3) keep plugin options across
