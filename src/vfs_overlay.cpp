@@ -905,11 +905,20 @@ struct DiscoveredMod {
     JsonVal manifest;
 };
 
-std::string res_path(const std::string& mod_root, const char* file_name) {
-    return path_join(path_join(mod_root, "resources"), file_name);
-}
-std::string res_path(const std::string& mod_root, const std::string& file_name) {
-    return path_join(path_join(mod_root, "resources"), file_name);
+// Texture/icon data files ("data", "icon_texture", ...) named by a manifest. Looked up in order:
+//   1. "resources_dir" in the manifest (relative to the manifest's folder), when given
+//   2. <mod root>/resources                      (source layout; .delta packages: <Classes>/resources)
+//   3. <mod root>/romfs/GameData/Classes/resources (release packages read through their root manifest.json)
+bool read_mod_res(const DiscoveredMod& m, const std::string& file_name, std::vector<uint8_t>& out) {
+    std::vector<std::string> dirs;
+    const std::string custom = m.manifest.str_or("resources_dir");
+    if (!custom.empty()) dirs.push_back(path_join(m.mod_root, custom));
+    dirs.push_back(path_join(m.mod_root, "resources"));
+    dirs.push_back(path_join(path_join(path_join(path_join(m.mod_root, "romfs"), "GameData"), "Classes"), "resources"));
+    for (const auto& d : dirs) {
+        if (read_host_file(path_join(d, file_name), out)) return true;
+    }
+    return false;
 }
 
 void discover_mods_in_overlay(const std::string& ov_dir,
@@ -1088,10 +1097,10 @@ bool plan_vfs_overlays(const std::vector<std::string>& overlay_dirs,
                     if (t->is_arr()) {
                         for (const auto& cand : t->arr_val) {
                             if (!tex.empty()) break;
-                            read_host_file(res_path(m.mod_root, cand.str_val), tex);
+                            read_mod_res(m, cand.str_val, tex);
                         }
                     } else if (!t->str_val.empty()) {
-                        read_host_file(res_path(m.mod_root, t->str_val), tex);
+                        read_mod_res(m, t->str_val, tex);
                     }
                 }
                 job_icon_patches.push_back({key, donor, tex});
@@ -1110,9 +1119,9 @@ bool plan_vfs_overlays(const std::vector<std::string>& overlay_dirs,
                         if (base.size() > 4 && base.rfind(".png") == base.size() - 4) {
                             base = base.substr(0, base.size() - 4);
                         }
-                        read_host_file(res_path(m.mod_root, base + ".bc7.swizzled"), sw_bc7);
+                        read_mod_res(m, base + ".bc7.swizzled", sw_bc7);
                         if (sw_bc7.empty()) {
-                            read_host_file(res_path(m.mod_root, base + ".swizzled"), sw_bc7);
+                            read_mod_res(m, base + ".swizzled", sw_bc7);
                         }
                     }
                     // Donor icon (layout / format template): "icon_clone_from", default a stock skill icon.
@@ -1177,7 +1186,7 @@ bool plan_vfs_overlays(const std::vector<std::string>& overlay_dirs,
                     tp.new_name = e.str_or("name");
                     tp.clone_from_name = e.str_or("clone_from");
                     std::string data = e.str_or("data");
-                    if (!data.empty()) read_host_file(res_path(m.mod_root, data), tp.custom_swizzled_data);
+                    if (!data.empty()) read_mod_res(m, data, tp.custom_swizzled_data);
                     if (!tp.new_name.empty() && !tp.clone_from_name.empty()) {
                         I.bntx_patches[vpath].push_back(std::move(tp));
                     }

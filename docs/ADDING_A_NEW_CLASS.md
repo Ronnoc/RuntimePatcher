@@ -65,6 +65,7 @@ Game addresses come from the game profile (your game files + a hooks file, or a 
    mods/<mod_id>/
      manifest.json      <- the only input the build reads (plus resources/*.swizzled)
      resources/         <- optional custom textures (*.swizzled), copied into the package
+                           (another folder: "resources_dir": "<path relative to manifest.json>")
      README.md          <- design notes for humans
    ```
 2. Edit `manifest.json`:

@@ -4,6 +4,11 @@ All notable changes to this project are documented here. Versions follow [Semant
 
 ## [Unreleased]
 
+- Mod texture files (`data`, `texture`, `icon_texture`, ...) are found in packaged mods too. When a package was read
+  through its root `manifest.json` (the PC build), the runtime looked only in `<package>/resources/`, while packages
+  ship them in `romfs/GameData/Classes/resources/`; the files were missed and the donor texture was kept (new
+  portraits and icons showed the donor's picture). Lookup order now: the manifest's optional `resources_dir`
+  (relative to the manifest), `resources/`, then `romfs/GameData/Classes/resources/`.
 - MSBT patching: adding new labels now also extends the per-message TSY1 (style) and AOCM sections, so their entry
   counts match TXT2. A new entry takes its template label's values, otherwise the file's most common style.
   Previously these sections kept the old count, and other tools that validate MSBT files rejected the output.
