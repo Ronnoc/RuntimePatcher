@@ -94,7 +94,9 @@ jobs:
             echo
             echo "### Install"
             echo "Unzip \`FEFW_RuntimePatcher-$VERSION.zip\` into \`<emulator>/load/<title id>/\` and enable"
-            echo "\`FEFW_RuntimePatcher\` in the emulator's add-on list. Built for one game version; see the README."
+            echo "\`FEFW_RuntimePatcher\` in the emulator's add-on list. Eden (game started from an exefs folder): also"
+            echo "copy \`FEFW_RuntimePatcher/exefs/subsdk9\` into the game's exefs folder, next to \`main\`. Atmosphere: put"
+            echo "the add-on's \`exefs\` in \`atmosphere/contents/<title id>/exefs/\`. Built for one game version; see the README."
           } >> notes.md
 
       - name: Publish
