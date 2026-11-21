@@ -47,7 +47,7 @@ static void dbg_rc(const char* what, u32 rc) {
 // Unbound slots point back into main (PLT0 resolver), so "outside main" means "bound".
 static u64 bound_open_file(void) {
     u64 v = *(volatile u64*)fefw_got_0;
-    u64 here = (u64)fefw_boot_stub_0;
+    u64 here = (u64)fefw_got_0;  // a point inside main (this code lives in subsdk9, ~100MB after main)
     if (v > here - 0x4000000ul && v < here + 0x1000000ul) return 0;
     return v;
 }
