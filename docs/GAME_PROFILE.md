@@ -39,7 +39,7 @@ or `"0x..."` strings; keys starting with `_` and `note` fields are ignored.
 }
 ```
 
-- `mid_hooks` (at most 16): `name` is any identifier; `va` is the `main`-relative offset of one instruction,
+- `mid_hooks` (at most 64): `name` is any identifier; `va` is the `main`-relative offset of one instruction,
   `insn` its original encoding. The build checks `insn` against your `main` and rejects PC-relative instructions.
   At the site, the instruction is replaced by a jump into the runtime, which calls every callback registered for
   that name with the registers x0..x30 (callbacks may change them), then runs the original instruction.

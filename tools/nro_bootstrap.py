@@ -35,7 +35,7 @@ PLT_HOOKS = list(zip(FS_IMPORTS, ["fefw_fs_OpenFile", "fefw_fs_ReadFile", "fefw_
 PLT_IMPORTS = [imp for imp, _ in PLT_HOOKS]
 # Mid-function hooks come from the game profile (tools/game_profile.py): [name, main offset, original
 # instruction]. Hook index = len(PLT_HOOKS) + position; mid hook k enters the runtime through export fefw_mid_<k>.
-MAX_MID_HOOKS = 16  # = FEFW_MAX_MID_HOOKS (number of fefw_mid_<k> exports in nx/src/nx_game_hooks.cpp)
+MAX_MID_HOOKS = 64  # = FEFW_MAX_MID_HOOKS (number of fefw_mid_<k> exports in nx/src/nx_game_hooks.cpp)
 
 
 def mid_hook_exports(mid_hooks):
@@ -213,6 +213,7 @@ def build(nx_dir, out_dir, profile, clang, lld, mount="Contents"):
     blob = open(blob_path, "rb").read()
     if boot_va + len(blob) > limit:
         raise SystemExit(f"[!] bootstrap is 0x{len(blob):x} bytes; only 0x{limit - boot_va:x} free in main's .text tail")
+    print(f"[+] bootstrap 0x{len(blob):x} bytes, {len(mid_hooks)} mid hook site(s); 0x{limit - boot_va - len(blob):x} of main's .text tail left")
 
     syms = {}
     for line in subprocess.run([nm, elf], capture_output=True, text=True, check=True).stdout.splitlines():

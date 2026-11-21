@@ -4,6 +4,7 @@ All notable changes to this project are documented here. Versions follow [Semant
 
 ## [Unreleased]
 
+- Game profiles can list up to 64 mid hook sites (was 16): the runtime exports `fefw_mid_0` .. `fefw_mid_63`. The real limit is the free space in main's .text tail, which the boot stubs of the sites in use must fit into.
 - Mod texture files (`data`, `texture`, `icon_texture`, ...) are found in packaged mods too. When a package was read
   through its root `manifest.json` (the PC build), the runtime looked only in `<package>/resources/`, while packages
   ship them in `romfs/GameData/Classes/resources/`; the files were missed and the donor texture was kept (new

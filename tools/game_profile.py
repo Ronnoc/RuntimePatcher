@@ -33,7 +33,7 @@ def _hex(v):
     return int(v, 0) if isinstance(v, str) else int(v)
 
 
-MAX_MID_HOOKS = 16  # number of fefw_mid_<k> entry points in the runtime
+MAX_MID_HOOKS = 64  # number of fefw_mid_<k> entry points in the runtime
 
 
 def load_hooks(path):
