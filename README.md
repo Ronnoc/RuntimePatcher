@@ -45,7 +45,8 @@ python tools/build_emulator_mod.py all --deploy   # build foundation (NRO loader
 - **NRO loader (default):** `FEFW_RuntimePatcher` ships `exefs/<main build id>.ips` (redirects main's `nn::fs` PLT
   entries and the mid hook sites), `exefs/subsdk9` (the small bootstrap those branch into) and
   `romfs/fefw/runtime_patcher.nro|nrr`, loaded after boot through the game's own `nn::ro`.
-  The game's own exefs is not modified (the emulator / Atmosphere layers `subsdk9` in from the add-on); no rtld patch.
+  Atmosphere loads `subsdk9` from the add-on's exefs; Eden started from a loose exefs folder does not layer new exefs
+  files, so deploy also copies `subsdk9` next to the game's `main` (`FEFW_GAME_EXEFS`). No rtld patch.
 - **Static loader (fallback):** `--loader static` installs `subsdk9` into the game's `exefs/`.
 - `--deploy` copies the packages into `<emulator user folder>/load/<title id>/` for every installed
   emulator (`%APPDATA%/eden` on Windows, `~/.local/share/eden` on Linux, `~/Library/Application Support/eden`

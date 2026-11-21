@@ -9,7 +9,7 @@ All notable changes to this project are documented here. Versions follow [Semant
   into its own module, `FEFW_RuntimePatcher/exefs/subsdk9`. The tail fit only about 20 mid hook sites; the module has
   no such limit and also has writable data. The loader maps subsdk9 right after main's `subsdk0..8`, at a fixed
   distance from main (`layout.subsdk9` in the game profile; saved profiles must be rebuilt), so main reaches it with
-  plain `b` and the module needs no relocations. The game's own exefs is still not modified.
+  plain `b` and the module needs no relocations. Eden does not layer new exefs files from `load/`, so deploy copies `subsdk9` into the game exefs.
 - Mod texture files (`data`, `texture`, `icon_texture`, ...) are found in packaged mods too. When a package was read
   through its root `manifest.json` (the PC build), the runtime looked only in `<package>/resources/`, while packages
   ship them in `romfs/GameData/Classes/resources/`; the files were missed and the donor texture was kept (new

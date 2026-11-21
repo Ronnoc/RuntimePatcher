@@ -19,9 +19,9 @@ Usage
                                      [--mods-dir DIR ...] [--out-dir DIR]
   --mods-dir: folders holding <id>/manifest.json (repeatable; default ./mods, or $FEFW_MODS_DIR, ';'/':'-separated)
   --out-dir:  root for release/emulator_ready/... (default: this repo, or $FEFW_OUT_DIR)
-  nro (default): ships the bootstrap as exefs/subsdk9 in the add-on (Eden layers new exefs files; Atmosphere
-                 loads it from contents/<title>/exefs). Deploy removes a stale static subsdk9 from the game
-                 exefs. Nothing in the game files or other mods is modified.
+  nro (default): ships the bootstrap as exefs/subsdk9 in the add-on (Atmosphere loads it from contents/<title>/exefs);
+                 deploy also copies it into the game exefs, since Eden started from a loose exefs folder does
+                 not layer new exefs files. Nothing else in the game files or other mods is modified.
   static:        deploy installs subsdk9 into the game exefs;
   See docs/ADDING_A_NEW_CLASS.md for the class-authoring guide.
 
@@ -710,13 +710,14 @@ def deploy(packages):
     if FOUNDATION_PKG in packages and LOADER == "static":
         install_into_game_exefs(os.path.join(RELEASE_DIR, FOUNDATION_PKG, "exefs", MODULE_NAME))
     elif FOUNDATION_PKG in packages and GAME_EXEFS:
-        stale = os.path.join(GAME_EXEFS, MODULE_NAME)
-        if os.path.isfile(stale):
-            if is_our_module(stale):
-                os.remove(stale)
-                print(f"[-] NRO loader: removed our static {MODULE_NAME} from the game exefs")
-            else:
-                print(f"    [!] the game exefs has a {MODULE_NAME} that is not ours; left untouched")
+        # Eden started from a loose exefs folder does not layer new exefs files from load/, so the bootstrap
+        # module goes next to main (replacing only a static subsdk9 or bootstrap of ours).
+        dst = os.path.join(GAME_EXEFS, MODULE_NAME)
+        if os.path.isfile(dst) and not (is_our_module(dst) or nro_bootstrap._is_boot_module(dst)):
+            print(f"    [!] the game exefs has a {MODULE_NAME} that is not ours; left untouched")
+        elif os.path.isdir(GAME_EXEFS):
+            shutil.copy2(os.path.join(RELEASE_DIR, FOUNDATION_PKG, "exefs", MODULE_NAME), dst)
+            print(f"[+] NRO loader: installed the bootstrap {MODULE_NAME} into the game exefs: {GAME_EXEFS}")
     for emu_dir in emulator_dirs():
         emu = os.path.basename(emu_dir)
         load = os.path.join(emu_dir, "load", TITLE_ID)
