@@ -17,7 +17,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Read VERSION
         run: |
@@ -35,7 +35,7 @@ jobs:
             echo "::error::repository secret FEFW_GAME_PROFILE is not set (see README: Releases)"; exit 1
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -48,7 +48,7 @@ jobs:
       # The pinned libc++ headers (tools/fetch_third_party.py) need the matching clang; the runner's LLVM is older.
       - name: Cache LLVM
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: C:\llvm
           key: llvm-23.1.5-x86_64-pc-windows-msvc
@@ -80,7 +80,7 @@ jobs:
           (cd "$pkg" && 7z a -tzip "$GITHUB_WORKSPACE/FEFW_RuntimePatcher-$VERSION.zip" FEFW_RuntimePatcher > /dev/null)
           git archive --format=zip --prefix="RuntimePatcher-$VERSION/" -o "RuntimePatcher-$VERSION-src.zip" HEAD
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: FEFW_RuntimePatcher-${{ env.VERSION }}
           path: FEFW_RuntimePatcher-${{ env.VERSION }}.zip

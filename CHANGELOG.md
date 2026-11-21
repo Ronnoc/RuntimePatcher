@@ -4,7 +4,10 @@ All notable changes to this project are documented here. Versions follow [Semant
 
 ## [Unreleased]
 
+## [0.2.0]
+
 - Game profiles can list up to 64 mid hook sites (was 16): the runtime exports `fefw_mid_0` .. `fefw_mid_63`.
+- GitHub Actions updated to the Node 24 versions (checkout v7, setup-python v7, cache v6, upload-artifact v7).
 - NRO loader: the bootstrap (PLT redirect and mid hook stubs, nn::ro loader) moved out of main's unused .text tail
   into its own module, `FEFW_RuntimePatcher/exefs/subsdk9`. The tail fit only about 20 mid hook sites; the module has
   no such limit and also has writable data. The loader maps subsdk9 right after main's `subsdk0..8`, at a fixed
@@ -22,8 +25,6 @@ All notable changes to this project are documented here. Versions follow [Semant
   with -1 / +1; returning 1 marks the value as changed, as on the game's own setting rows.
 - Plugin settings: `settings_get` / `settings_set` (appended to plugin API version 3) keep plugin options across
   boots. The Switch runtime stores them in the game's save data (`save:/fefw_settings.ini`).
-- Smaller NRO bootstrap: mid hook export names (`fefw_mid_<k>`) are built at run time instead of stored per hook,
-  and the loader is compiled for size, so more mid hook sites fit into the free tail of the game's code segment.
 - Plugin API version 3: `call_game(addr, args, nargs)` calls a game function. On the Switch it is a plain call; a host
   where game code does not run natively routes it through its own call mechanism, so plugins that call the game only
   through it can be built for both.

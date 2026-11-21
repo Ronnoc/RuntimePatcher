@@ -125,7 +125,7 @@ a hooks file, or from a saved profile: see [docs/GAME_PROFILE.md](docs/GAME_PROF
 ## Versioning and releases
 
 The version lives in [`VERSION`](VERSION) ([SemVer](https://semver.org/)). It is compiled into the runtime and
-shown in its load log line (`[FEFW] RuntimePatcher 0.1.1 (NRO) loaded`).
+shown in its load log line (`[FEFW] RuntimePatcher 0.2.0 (NRO) loaded`).
 
 To release:
 
