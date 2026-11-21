@@ -75,6 +75,7 @@ def from_exefs(exefs, hooks, sdk_symbols):
     return {
         "schema": SCHEMA,
         "main": main,
+        "layout": {"subsdk9": nro_bootstrap.subsdk9_offset(exefs)},
         "sdk": {"mod0": struct.unpack_from("<I", img, 4)[0], "syms": {n: found[n] for n in sdk_symbols}},
         "title_id": hooks["title_id"],
         "mid_hooks": hooks["mid_hooks"],

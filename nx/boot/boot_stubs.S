@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// FEFW NRO bootstrap — PLT redirect stubs, placed in main's unused .text tail (see tools/nro_bootstrap.py).
+// FEFW NRO bootstrap — PLT redirect and mid hook stubs, linked into the subsdk9 module (see tools/nro_bootstrap.py).
 //
 // main uses LAZY binding: until a PLT entry is first called its GOT slot points at main's PLT0 resolver,
 // which expects x16 = &GOT slot / x17 = *GOT slot. So the fallback never jumps to the GOT value directly;
@@ -8,6 +8,12 @@
 //   PLT entry N (patched)  ->  fefw_boot_stub_N: x9 = N, x10 = &fefw_boot_orig_N, -> dispatch
 //   dispatch: target = fefw_boot_resolve(N, x1); target ? br target (our NRO hook) : br x10 (original PLT)
     .section .text.boot_stubs, "ax", %progbits
+
+// Exported marker: identifies a subsdk9 built by tools/nro_bootstrap.py.
+    .global fefw_boot_module
+    .type   fefw_boot_module, %function
+fefw_boot_module:
+    ret
 
     .macro STUB idx
     .global fefw_boot_stub_\idx

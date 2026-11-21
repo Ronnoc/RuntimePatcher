@@ -49,8 +49,9 @@ or `"0x..."` strings; keys starting with `_` and `note` fields are ignored.
     `game.SYSTEM_MENU_REG` names the register holding the menu there.
 - `game`: becomes `FEFW_GAME_<NAME>` macros in `build/nx/gen/fefw_game_offsets.h`, used by `nx/src/nx_game_hooks.cpp`.
 
-Everything else (main's build id, PLT/GOT slots of the redirected imports, `malloc`, the sdk symbol offsets) is read
-from the game files.
+Everything else (main's build id, PLT/GOT slots of the redirected imports, `malloc`, the sdk symbol offsets, and
+`layout.subsdk9`: where the bootstrap module lands, i.e. the page-aligned sizes of `main` + `subsdk0..8`) is read
+from the game files. A profile saved before `layout` existed must be rebuilt from the game exefs.
 
 ## Saving a profile for CI
 

@@ -16,7 +16,8 @@ other code mods unmodified); static is the fallback.
 ### NRO loader (default, `--loader nro`)
 
 ```
-rtld ── main* ── subsdk0..3 ── sdk          (* main patched by FEFW_RuntimePatcher/exefs/<build id>.ips)
+rtld ── main* ── subsdk0..3 ── subsdk9 ── sdk   (* main patched by FEFW_RuntimePatcher/exefs/<build id>.ips;
+                                  │               subsdk9 = FEFW_RuntimePatcher/exefs/subsdk9, the bootstrap)
                                   └─ nn::ro loads romfs:/fefw/runtime_patcher.nro after boot
 ```
 
@@ -108,9 +109,9 @@ python tools/build_emulator_mod.py all --deploy --loader static                 
 What `--deploy` does:
 - packages land in `release/emulator_ready/<title id>/` (`FEFW_RuntimePatcher` + one `FEFW_<Id>_Mod` per
   manifest) and are copied into `<emulator user folder>/load/<title id>/` (see README; `FEFW_EMU_DIR` overrides);
-- **nro**: `FEFW_RuntimePatcher` = `exefs/<main build id>.ips` + `romfs/fefw/runtime_patcher.nro|nrr`; removes a stale
-  `subsdk9` from the game exefs (`FEFW_GAME_EXEFS`); checks that our main IPS does not overlap other mods' main IPS;
-- **static**: installs `subsdk9` into the game exefs (Eden ignores new NSOs under `load/`);
+- **nro**: `FEFW_RuntimePatcher` = `exefs/<main build id>.ips` + `exefs/subsdk9` (bootstrap) +
+  `romfs/fefw/runtime_patcher.nro|nrr`; removes a stale static `subsdk9` from the game exefs (`FEFW_GAME_EXEFS`); checks that our main IPS does not overlap other mods' main IPS;
+- **static**: installs `subsdk9` into the game exefs;
 - writes the deployed mode to `load/<title id>/.fefw_loader` and prints `[!] loader switched …` when it
   changes. Both modes write the same folders; the last deploy wins.
 
@@ -149,7 +150,8 @@ In Eden's add-on list make sure `FEFW_RuntimePatcher` and every `FEFW_<Id>_Mod` 
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| Classes missing, log has no `subsdk9` line | Eden only *replaces* existing NSOs; base game has no subsdk9 | subsdk9 must be in the game exefs (deploy does it) |
+| Static loader: classes missing, log has no `subsdk9` line | the emulator does not layer *new* NSOs from `load/` (older yuzu forks only replace existing ones) | install subsdk9 into the game exefs (deploy does it) |
+| NRO loader: game crashes right at boot | `exefs/subsdk9` (bootstrap) missing or not layered in, while the main IPS branches into it | ship the IPS and `subsdk9` together; check the emulator loads new exefs files |
 | Crash `Unmapped read 0x0` after `[FEFW] ERROR: cannot resolve real _ZN2nn2fs…` | runtime dynsym lookup fails on Eden NX2 | build-time sdk offsets fallback (already in place); rebuild if the game's `sdk` changes |
 | NRO: `[FEFW-BOOT] nn::ro::RegisterModuleInfo 0x00000c16` | NRR in Switch 1 layout | `mknrr --format 1` (default) |
 | NRO: crash right after boot, PC in main's rodata, return address inside the bootstrap | stub used an unbound (lazy) GOT value as a function address | fall back through the copied PLT entry (`fefw_boot_orig_N`); touch `nn::ro` only after the OpenFile slot is bound (in place) |

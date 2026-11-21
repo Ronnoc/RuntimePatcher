@@ -7,9 +7,10 @@ One command builds everything an emulator (Eden / Citron) needs:
 
   release/emulator_ready/<title id>/
     FEFW_RuntimePatcher/
-      exefs/<main build id>.ips      <- [nro, default] main bootstrap: PLT redirects + nn::ro loader
+      exefs/<main build id>.ips      <- [nro, default] main patch: PLT redirects + mid hook branches into subsdk9
+      exefs/subsdk9                  <- [nro, default] bootstrap module: hook stubs + nn::ro loader
       romfs/fefw/runtime_patcher.nro|nrr <- [nro, default] the runtime, loaded after boot
-      exefs/subsdk9                  <- [static] the foundation as a static module
+      exefs/subsdk9                  <- [static] the foundation as a static module (instead of the bootstrap)
     FEFW_<Mod>/romfs/GameData/Classes/...   <- every mods/*/manifest.json (data only, no IPS)
 
 Usage
@@ -18,15 +19,16 @@ Usage
                                      [--mods-dir DIR ...] [--out-dir DIR]
   --mods-dir: folders holding <id>/manifest.json (repeatable; default ./mods, or $FEFW_MODS_DIR, ';'/':'-separated)
   --out-dir:  root for release/emulator_ready/... (default: this repo, or $FEFW_OUT_DIR)
-  nro (default): deploy removes any stale subsdk9 from the game exefs. Nothing in the game files or other
-                 mods is modified.
-  static:        deploy installs subsdk9 into the game exefs (Eden ignores new NSOs under load/);
+  nro (default): ships the bootstrap as exefs/subsdk9 in the add-on (Eden layers new exefs files; Atmosphere
+                 loads it from contents/<title>/exefs). Deploy removes a stale static subsdk9 from the game
+                 exefs. Nothing in the game files or other mods is modified.
+  static:        deploy installs subsdk9 into the game exefs;
   See docs/ADDING_A_NEW_CLASS.md for the class-authoring guide.
 
 How it works
   * clang (--target=aarch64-none-elf) + header-only libc++ + musl headers (third_party/), no SDK.
-  * nro: tools/nro_bootstrap.py patches main's nn::fs PLT entries to nx/boot (in main's unused .text
-    tail); on the first romfs OpenFile it loads runtime_patcher.nro via nn::ro and forwards to its fefw_fs_*
+  * nro: tools/nro_bootstrap.py builds nx/boot as the subsdk9 module and patches main's nn::fs PLT entries (and the
+    mid hook sites) to branch into it; on the first romfs OpenFile it loads runtime_patcher.nro via nn::ro and forwards to its fefw_fs_*
     hooks. static: the module exports the nn::fs symbols main imports, so rtld binds main to it.
   * Either way Job.bin / Skill.bin / AssetTable.bin / msbt / icon archives are synthesized in memory.
   * Every undefined symbol of the module is checked against the game's real module exports.
@@ -510,15 +512,16 @@ def build_foundation(jobs: int):
         nso_tool.cmd_elf2nro(argparse.Namespace(elf=out_elf, out=nro))
         nso_tool.cmd_mknrr(argparse.Namespace(out=os.path.join(dst, NRO_BASENAME + ".nrr"), nro=[nro],
                                               program_id=TITLE_ID, format=1))
-        build_id, ips, _records = nro_bootstrap.build(NX_DIR, os.path.join(BUILD_DIR, "boot"), PROFILE,
+        build_id, ips, _records, boot_nso = nro_bootstrap.build(NX_DIR, os.path.join(BUILD_DIR, "boot"), PROFILE,
                                                      find_tool("clang"), find_tool("ld.lld"))
         os.makedirs(os.path.join(pkg, "exefs"), exist_ok=True)
         with open(os.path.join(pkg, "exefs", build_id + ".ips"), "wb") as f:
             f.write(ips)
+        shutil.copy2(boot_nso, os.path.join(pkg, "exefs", MODULE_NAME))
         with open(os.path.join(pkg, "README.txt"), "w", encoding="utf-8") as f:
             f.write(f"FEFW RuntimePatcher {VERSION} (NRO loader)\n"
-                    "exefs/<main build id>.ips redirects main's nn::fs PLT entries to a bootstrap that loads\n"
-                    "romfs/fefw/runtime_patcher.nro through nn::ro. No subsdk9, no rtld patch required.\n"
+                    "exefs/<main build id>.ips redirects main's nn::fs PLT entries and hook sites to the bootstrap in\n"
+                    "exefs/subsdk9, which loads romfs/fefw/runtime_patcher.nro through nn::ro. No rtld patch required.\n"
                     "Required by every FEFW class mod; enable it in the emulator's add-on list.\n")
         return nro
     out_nso = os.path.join(pkg, "exefs", MODULE_NAME)
