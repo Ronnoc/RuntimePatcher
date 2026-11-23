@@ -837,6 +837,19 @@ void apply_generic_table_patches(std::vector<GameTable>& sheets, const JsonVal& 
                 }
                 proto = sheet.find_row_by_clause(static_cast<size_t>(cf->int_or("column", 0)), clause);
             }
+            // "clone_from_where": { "column": 0, "equals": "<string>" } -- template = first row whose string column
+            // equals the value; the new row is inserted right after it (same section of a sectioned sheet).
+            if (const auto* cw = op.get("clone_from_where"); !proto && cw && cw->is_obj()) {
+                size_t wc = static_cast<size_t>(cw->int_or("column", 0));
+                std::string want = cw->str_or("equals");
+                for (const auto& r : sheet.rows) {
+                    if (wc < r.values.size() && r.values[wc].kind == TableValue::Kind::kString &&
+                        r.values[wc].str_val == want) {
+                        proto = &r;
+                        break;
+                    }
+                }
+            }
             std::map<size_t, TableValue> new_vals;
             if (const auto* cols = op.get("columns"); cols && cols->is_obj()) {
                 for (const auto& [c_str, jval] : cols->obj_val) {

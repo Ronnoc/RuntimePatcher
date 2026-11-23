@@ -9,6 +9,8 @@ All notable changes to this project are documented here. Versions follow [Semant
   mods can each add a row.
 - `APPEND_ROW` takes `"allow_duplicate": true` to skip its column-0 duplicate check (keyless continuation rows
   that legitimately repeat column 0, e.g. `[]`).
+- `APPEND_ROW` takes `"clone_from_where": {"column": N, "equals": "..."}`: the template is the first row whose
+  string column equals the value, and the new row goes right after it (keeps sectioned sheets such as Variable in order).
 
 ## [0.2.0]
 
