@@ -4,6 +4,12 @@ All notable changes to this project are documented here. Versions follow [Semant
 
 ## [Unreleased]
 
+- New table op `APPEND_MATRIX_ROW`: appends a row to a square "row x row" sheet (one array entry per row, in row
+  order) and pads every existing row's array with its pair value (`pair`: `default` + per-key values), so several
+  mods can each add a row.
+- `APPEND_ROW` takes `"allow_duplicate": true` to skip its column-0 duplicate check (keyless continuation rows
+  that legitimately repeat column 0, e.g. `[]`).
+
 ## [0.2.0]
 
 - Game profiles can list up to 64 mid hook sites (was 16): the runtime exports `fefw_mid_0` .. `fefw_mid_63`.

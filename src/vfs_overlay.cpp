@@ -687,6 +687,29 @@ void apply_generic_table_patches(std::vector<GameTable>& sheets, const JsonVal& 
                     }
                 }
             }
+        } else if (type == "APPEND_MATRIX_ROW") {
+            // Square "row x row" sheets where each row holds one array entry per row of the sheet, in row order
+            // (e.g. a pair-affinity table stored as an upper triangle):
+            //   { "op": "APPEND_MATRIX_ROW", "sheet": 0, "column": 0, "key": "<new row key>",
+            //     "pair": { "default": 1, "<existing row key>": 3, ... } }
+            // Appends the row (array of N+1 zeros) and pads every existing row's array to N+1 entries with its
+            // pair value, so several mods can each append a row. Idempotent: skipped when the key exists.
+            std::string key = op.str_or("key");
+            int col = static_cast<int>(op.int_or("column", 0));
+            if (key.empty() || col < 0 || static_cast<size_t>(col) >= sheet.fields.size() || sheet.find_row(key)) continue;
+            const auto* pair = op.get("pair");
+            int64_t def = pair && pair->is_obj() ? pair->int_or("default", 0) : 0;
+            size_t n = sheet.rows.size() + 1;
+            for (auto& r : sheet.rows) {
+                if (static_cast<size_t>(col) >= r.values.size()) continue;
+                TableValue& v = r.values[static_cast<size_t>(col)];
+                if (v.kind != TableValue::Kind::kArray1D) v = TableValue::make_array1d({});
+                int64_t pv = (pair && pair->is_obj() && pair->get(r.key)) ? pair->int_or(r.key, def) : def;
+                while (v.arr_1d.size() + 1 < n) v.arr_1d.push_back(TableValue::make_int(0));
+                if (v.arr_1d.size() < n) v.arr_1d.push_back(TableValue::make_int(pv));
+            }
+            TableRow& row = sheet.upsert_keyed_row(key, "");
+            row.values[static_cast<size_t>(col)] = TableValue::make_array1d(TableArray1D(n, TableValue::make_int(0)));
         } else if (type == "PATCH_EXISTING_ROW") {
             std::string key = op.str_or("target_key");
             TableRow* row = sheet.find_row(key);
@@ -802,7 +825,8 @@ void apply_generic_table_patches(std::vector<GameTable>& sheets, const JsonVal& 
         } else if (type == "APPEND_ROW") {
             // Keyless/condition rows (AssetTable sheet 0 ...): { "op": "APPEND_ROW", "sheet": 0, "key": "",
             //   "clone_from_clause": { "column": 0, "clause": ["AID_..."] }, "columns": { "0": [["AID_new"]], ... } }
-            // Idempotent: skipped when a row with identical column-0 value already exists.
+            // Idempotent: skipped when a row with identical column-0 value already exists, unless
+            // "allow_duplicate": true (keyless rows of keyed groups, e.g. dated rows that all start with []).
             const TableRow* proto = nullptr;
             if (const auto* cf = op.get("clone_from_clause"); cf && cf->is_obj()) {
                 std::vector<std::string> clause;
@@ -823,7 +847,9 @@ void apply_generic_table_patches(std::vector<GameTable>& sheets, const JsonVal& 
                 }
             }
             bool duplicate = false;
-            if (auto it = new_vals.find(0); it != new_vals.end() && it->second.kind == TableValue::Kind::kArray2D) {
+            const auto* ad = op.get("allow_duplicate");
+            const bool allow_dup = ad && ad->is_bool() && ad->b_val;
+            if (auto it = new_vals.find(0); !allow_dup && it != new_vals.end() && it->second.kind == TableValue::Kind::kArray2D) {
                 for (const auto& r : sheet.rows) {
                     if (!r.values.empty() && r.values[0].kind == TableValue::Kind::kArray2D &&
                         r.values[0].to_string() == it->second.to_string()) {
