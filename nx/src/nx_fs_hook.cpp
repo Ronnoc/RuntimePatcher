@@ -248,8 +248,10 @@ struct OpenSynth {
 constexpr int kMaxOpenSynth = 64;
 OpenSynth g_open[kMaxOpenSynth];
 volatile int g_open_lock = 0;
+volatile int g_open_count = 0;
 
 const std::vector<uint8_t>* find_open(FileHandle h) {
+    if (__atomic_load_n(&g_open_count, __ATOMIC_ACQUIRE) == 0) return nullptr;
     const std::vector<uint8_t>* r = nullptr;
     spin_lock(&g_open_lock);
     for (auto& e : g_open) {
@@ -269,6 +271,7 @@ bool register_open(FileHandle h, SynthFile* data) {
         if (!e.data) {
             e.handle = h.handle;
             e.data = data;
+            __atomic_add_fetch(&g_open_count, 1, __ATOMIC_RELEASE);
             ok = true;
             break;
         }
@@ -278,6 +281,7 @@ bool register_open(FileHandle h, SynthFile* data) {
 }
 
 SynthFile* unregister_open(FileHandle h) {
+    if (__atomic_load_n(&g_open_count, __ATOMIC_ACQUIRE) == 0) return nullptr;
     SynthFile* found = nullptr;
     spin_lock(&g_open_lock);
     for (auto& e : g_open) {
@@ -285,6 +289,7 @@ SynthFile* unregister_open(FileHandle h) {
             found = e.data;
             e.data = nullptr;
             e.handle = nullptr;
+            __atomic_sub_fetch(&g_open_count, 1, __ATOMIC_RELEASE);
             break;
         }
     }

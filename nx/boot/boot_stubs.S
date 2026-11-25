@@ -53,9 +53,44 @@ fefw_boot_mid_\idx:
     .endm
 
 // Shared body of the MID stubs: the stub has reserved ctx (0x100 bytes) at sp and stored x0, x1, x30 in it;
-// x0 = hook index. Saves x2..x29, calls the NRO hook with ctx, reloads x0..x29 (x30 is reloaded by the stub).
+// x0 = hook index. Fast-paths cached targets directly from fefw_hook_cache without calling fefw_boot_resolve
+// (or nn::ro::LookupSymbol), and skips saving x2..x29 entirely before the NRO is loaded or for missing slots.
 fefw_boot_mid_common:
-    stp     x2, x3, [sp, #0x10]
+    adrp    x1, fefw_hook_cache
+    add     x1, x1, :lo12:fefw_hook_cache
+    add     x1, x1, x0, lsl #3
+    ldar    x1, [x1]
+    cmp     x1, #1
+    b.hi    2f                    // > 1: cached NRO hook address in x1
+    b.eq    4f                    // == 1: resolved missing -> fast return
+    adrp    x1, fefw_nro_loaded
+    add     x1, x1, :lo12:fefw_nro_loaded
+    ldar    w1, [x1]
+    cbnz    w1, 3f                // NRO loaded, slot not cached yet -> resolve once
+4:  ldp     x0, x1, [sp, #0x00]
+    ret
+
+2:  stp     x2, x3, [sp, #0x10]
+    stp     x4, x5, [sp, #0x20]
+    stp     x6, x7, [sp, #0x30]
+    stp     x8, x9, [sp, #0x40]
+    stp     x10, x11, [sp, #0x50]
+    stp     x12, x13, [sp, #0x60]
+    stp     x14, x15, [sp, #0x70]
+    stp     x16, x17, [sp, #0x80]
+    stp     x18, x19, [sp, #0x90]
+    stp     x20, x21, [sp, #0xa0]
+    stp     x22, x23, [sp, #0xb0]
+    stp     x24, x25, [sp, #0xc0]
+    stp     x26, x27, [sp, #0xd0]
+    stp     x28, x29, [sp, #0xe0]
+    str     x30, [sp, #0xf8]
+    mov     x16, x1
+    mov     x0, sp
+    blr     x16
+    b       1f
+
+3:  stp     x2, x3, [sp, #0x10]
     stp     x4, x5, [sp, #0x20]
     stp     x6, x7, [sp, #0x30]
     stp     x8, x9, [sp, #0x40]
@@ -98,7 +133,15 @@ fefw_boot_mid_common:
 #include "boot_hooks.inc"
 
 fefw_boot_dispatch:
-    stp     x29, x30, [sp, #-0x60]!
+    adrp    x16, fefw_hook_cache
+    add     x16, x16, :lo12:fefw_hook_cache
+    add     x16, x16, x9, lsl #3
+    ldar    x16, [x16]
+    cmp     x16, #1
+    b.eq    1f                    // 1: resolved missing -> original PLT
+    cbz     x16, 2f               // 0: unresolved -> slow path
+    br      x16                   // cached NRO hook (zero spills, zero LookupSymbol)
+2:  stp     x29, x30, [sp, #-0x60]!
     mov     x29, sp
     stp     x0, x1, [sp, #0x10]
     stp     x2, x3, [sp, #0x20]

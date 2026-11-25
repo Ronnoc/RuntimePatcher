@@ -141,19 +141,39 @@ static int on_romfs(const char* path) {
     return 1;
 }
 
+// Resolved NRO hook targets (0 = unresolved, 1 = missing, else function address).
+// Read lock-free by boot_stubs.S so hot hooks never re-enter nn::ro::LookupSymbol.
+u64 fefw_hook_cache[FEFW_PLT_HOOK_COUNT + FEFW_MID_HOOK_COUNT];
+int fefw_nro_loaded;
+static volatile int g_load_state;  // 0 = unloaded, 1 = loading, 2 = loaded
+
 // x0 = stub index, x1 = the caller's original x1 (the path, for OpenFile).
-// Returns the NRO hook to jump to, or 0 to run the original PLT entry.
+// Returns the NRO hook to jump to, or 0 to run the original PLT entry / skip mid hook.
 u64 fefw_boot_resolve(u64 idx, const char* open_path) {
+    if (idx >= FEFW_PLT_HOOK_COUNT + FEFW_MID_HOOK_COUNT) return 0;
+    u64 cached = __atomic_load_n(&fefw_hook_cache[idx], __ATOMIC_ACQUIRE);
+    if (cached) return cached == 1ul ? 0 : cached;
     if (!bound_open_file()) return 0;  // nothing loaded yet and sdk not locatable: first OpenFile binds it
+    int state = __atomic_load_n(&g_load_state, __ATOMIC_ACQUIRE);
+    if (state != 2) {
+        // Only OpenFile (idx == 0) on the mounted romfs triggers NRO loading; skip LookupSymbol before that.
+        if (idx != 0 || state != 0 || !on_romfs(open_path)) return 0;
+        int expected = 0;
+        if (!__atomic_compare_exchange_n(&g_load_state, &expected, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return 0;
+        if (!try_load()) {
+            __atomic_store_n(&g_load_state, 0, __ATOMIC_RELEASE);
+            return 0;
+        }
+        __atomic_store_n(&g_load_state, 2, __ATOMIC_RELEASE);
+        __atomic_store_n(&fefw_nro_loaded, 1, __ATOMIC_RELEASE);
+    }
     char buf[24];
     const char* name = hook_name(idx, buf);
     if (!name) return 0;
     u64 hook = lookup(name);
+    __atomic_store_n(&fefw_hook_cache[idx], hook ? hook : 1ul, __ATOMIC_RELEASE);
     if (hook) return hook;
-    if (idx == 0 && on_romfs(open_path) && try_load()) {  // only OpenFile on the romfs triggers loading
-        hook = lookup(name);
-        if (hook) return hook;
-        dbg("[FEFW-BOOT] NRO loaded but hook symbol not found");
-    }
+    if (idx == 0) dbg("[FEFW-BOOT] NRO loaded but hook symbol not found");
     return 0;
 }
