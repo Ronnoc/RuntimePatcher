@@ -11,6 +11,8 @@ All notable changes to this project are documented here. Versions follow [Semant
   that legitimately repeat column 0, e.g. `[]`).
 - `APPEND_ROW` takes `"clone_from_where": {"column": N, "equals": "..."}`: the template is the first row whose
   string column equals the value, and the new row goes right after it (keeps sectioned sheets such as Variable in order).
+- Shared System menu groups: `register_menu_group_provider(group_name, fn, user)` (appended to plugin API version 3)
+  merges providers from separate plugins that share a `group_name` under one top-level System settings submenu.
 
 ## [0.2.0]
 

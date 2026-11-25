@@ -117,6 +117,12 @@ typedef struct FefwApi {
     // `dir` = -1 (Left) or +1 (Right) and the row's FefwMenuEntry::user. Return 1 when the value changed (the game
     // plays its cursor sound; call menu_refresh(item) to redraw the text), 0 when nothing changed.
     int (*menu_set_step)(void* item, FefwMenuStepFn fn);
+
+    // (appended to version 3; check `size`) Registers a provider under a shared submenu of the System settings menu
+    // named `group_name` (UTF-8, at most 63 bytes). Providers that share a `group_name` are merged into one top-level
+    // entry; opening it calls each provider in registration order to populate the submenu. Returns 1 on success, 0 on
+    // failure.
+    int (*register_menu_group_provider)(const char* group_name, FefwMenuProviderFn fn, void* user);
 } FefwApi;
 
 #define FEFW_SETTINGS_NOT_READY (-2)

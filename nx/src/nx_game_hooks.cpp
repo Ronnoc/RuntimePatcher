@@ -109,6 +109,33 @@ struct FrameCallback {
 };
 MenuProvider g_menu_providers[kMaxCallbacks];
 int g_menu_provider_count = 0;
+
+constexpr int kMaxMenuGroups = 8;
+struct MenuGroup {
+    char name[64];
+    MenuProvider providers[kMaxCallbacks];
+    int count;
+    FefwMenuEntry entry;
+};
+MenuGroup g_menu_groups[kMaxMenuGroups];
+int g_menu_group_count = 0;
+
+void* menu_add_entry(void* menu, const FefwMenuEntry* entry);
+void* menu_open_submenu(void* item);
+
+const char* group_menu_text(void* user, void*) {
+    return static_cast<MenuGroup*>(user)->name;
+}
+
+int group_menu_confirm(void* user, void* item) {
+    auto* g = static_cast<MenuGroup*>(user);
+    void* sub = menu_open_submenu(item);
+    if (!sub) return FEFW_MENU_IGNORED;
+    int n = __atomic_load_n(&g->count, __ATOMIC_ACQUIRE);
+    for (int i = 0; i < n; ++i) g->providers[i].fn(g->providers[i].user, sub);
+    return FEFW_MENU_OPENED;
+}
+
 FrameCallback g_frame_callbacks[kMaxCallbacks];
 int g_frame_callback_count = 0;
 
@@ -154,8 +181,45 @@ int register_menu_closed_callback(FefwMenuClosedFn fn, void* user) {
 
 int register_system_menu_provider(FefwMenuProviderFn fn, void* user) {
     lock(&g_reg_lock);
-    int ok = g_menu_provider_count < kMaxCallbacks;
-    if (ok) g_menu_providers[g_menu_provider_count++] = {fn, user};
+    int ok = fn && g_menu_provider_count < kMaxCallbacks;
+    if (ok) {
+        g_menu_providers[g_menu_provider_count] = {fn, user};
+        __atomic_store_n(&g_menu_provider_count, g_menu_provider_count + 1, __ATOMIC_RELEASE);
+    }
+    unlock(&g_reg_lock);
+    return ok;
+}
+
+int register_menu_group_provider(const char* group_name, FefwMenuProviderFn fn, void* user) {
+    if (!group_name || !group_name[0] || strlen(group_name) >= sizeof(g_menu_groups[0].name) || !fn) return 0;
+    lock(&g_reg_lock);
+    int gi = -1;
+    for (int i = 0; i < g_menu_group_count; ++i) {
+        if (strcmp(g_menu_groups[i].name, group_name) == 0) {
+            gi = i;
+            break;
+        }
+    }
+    int ok = 0;
+    if (gi < 0) {
+        if (g_menu_group_count < kMaxMenuGroups) {
+            gi = g_menu_group_count;
+            MenuGroup& g = g_menu_groups[gi];
+            snprintf(g.name, sizeof(g.name), "%s", group_name);
+            g.providers[0] = {fn, user};
+            g.entry = {&group_menu_text, &group_menu_confirm, &g};
+            __atomic_store_n(&g.count, 1, __ATOMIC_RELEASE);
+            __atomic_store_n(&g_menu_group_count, g_menu_group_count + 1, __ATOMIC_RELEASE);
+            ok = 1;
+        }
+    } else {
+        MenuGroup& g = g_menu_groups[gi];
+        if (g.count < kMaxCallbacks) {
+            g.providers[g.count] = {fn, user};
+            __atomic_store_n(&g.count, g.count + 1, __ATOMIC_RELEASE);
+            ok = 1;
+        }
+    }
     unlock(&g_reg_lock);
     return ok;
 }
@@ -201,6 +265,8 @@ void on_system_menu(void*, uint64_t* ctx) {
     void* menu = reinterpret_cast<void*>(ctx[FEFW_GAME_SYSTEM_MENU_REG]);
     int n = __atomic_load_n(&g_menu_provider_count, __ATOMIC_ACQUIRE);
     for (int i = 0; i < n; ++i) g_menu_providers[i].fn(g_menu_providers[i].user, menu);
+    int gn = __atomic_load_n(&g_menu_group_count, __ATOMIC_ACQUIRE);
+    for (int i = 0; i < gn; ++i) menu_add_entry(menu, &g_menu_groups[i].entry);
 }
 
 int register_frame_callback(FefwFrameFn fn, void* user) {
@@ -458,6 +524,7 @@ void fefw_nx::load_plugins(const char* mount, PluginReadFn read_file, PluginList
     g_api.settings_get = &fefw_nx::settings_get;
     g_api.settings_set = &fefw_nx::settings_set;
     g_api.menu_set_step = &menu_set_step;
+    g_api.register_menu_group_provider = &register_menu_group_provider;
 
 #if FEFW_NX_NRO
     auto ro_init = static_cast<Result (*)()>(nullptr);
