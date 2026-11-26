@@ -129,6 +129,17 @@ typedef struct FefwApi {
     // register_menu_group_provider uses `order = 0`, so negative values appear before default providers and
     // positive values appear after them. Returns 1 on success, 0 on failure.
     int (*register_menu_group_provider_ordered)(const char* group_name, int order, FefwMenuProviderFn fn, void* user);
+
+    // (appended to version 3; check `size`) Registers a provider under a shared submenu (`sub_id`, UTF-8 key up to 63
+    // bytes) inside a top-level group (`group_name`). Providers sharing `(group_name, sub_id)` are merged into a
+    // single row inside `group_name`, sorted by the lowest `sub_order` registered for that subgroup. The first
+    // non-NULL `title_fn` registered supplies the row's label (falling back to `sub_id`). Opening that row invokes
+    // all its providers in ascending `item_order`. If `item_key` is non-NULL and a provider with the same `item_key`
+    // is already registered in that subgroup, the duplicate registration is ignored and 1 is returned (letting
+    // multiple plugins share a single common option row). Returns 1 on success, 0 on failure.
+    int (*register_menu_subgroup_provider)(const char* group_name, const char* sub_id, int sub_order,
+                                           const char* (*title_fn)(void* user, void* item), void* title_user,
+                                           int item_order, const char* item_key, FefwMenuProviderFn fn, void* user);
 } FefwApi;
 
 #define FEFW_SETTINGS_NOT_READY (-2)
