@@ -12,8 +12,8 @@
 // icon archives in memory, and from then on reads of those files are served from memory.
 //
 // Memory: the boot pass only *plans* (which files are patched, with every mod resource already read). A
-// patched file is built the first time the game opens it, shared by overlapping handles, and freed when the
-// last handle closes (the game keeps its own copy). Re-opening rebuilds it.
+// patched file is built the first time the game opens it, shared by overlapping handles, and kept in a
+// bounded LRU cache after the last handle closes so re-opens avoid rebuilding while keeping RAM capped.
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -230,16 +230,36 @@ volatile int g_overlay_state = 0;  // 0 = not built, 1 = building, 2 = ready (po
 volatile int g_overlay_lock = 0;
 std::vector<std::string>* g_rejected_mounts = nullptr;
 
-// One built file, shared by every open handle on it; freed when the last handle closes.
+// One built file, shared by every open handle on it; retained in a bounded LRU cache when refs == 0.
+constexpr size_t kSynthCacheMaxBytes = 16 * 1024 * 1024;      // 16 MiB idle cache budget
+constexpr size_t kSynthCacheMaxFileBytes = 8 * 1024 * 1024;   // do not cache single files > 8 MiB after close
+
 struct SynthFile {
     std::string vpath;
     std::vector<uint8_t> data;
     int refs = 0;
+    uint64_t last_used = 0;
 };
-std::map<std::string, SynthFile*>* g_live = nullptr;  // vpath -> built file currently open
+std::map<std::string, SynthFile*>* g_live = nullptr;  // vpath -> built file (open or idle cached)
 volatile int g_live_lock = 0;
 size_t g_live_bytes = 0;
+size_t g_cached_bytes = 0;  // subset of g_live_bytes with refs == 0
+uint64_t g_lru_clock = 0;
 int g_build_count = 0;
+int g_cache_hits = 0;
+
+// Immutable fast lookup table for g_plan->target_paths (populated once in build_overlay).
+uint64_t g_target_bloom[4] = {};
+std::vector<const char*>* g_target_cstrs = nullptr;
+
+uint64_t fnv1a_cstr(const char* s) {
+    uint64_t h = 14695981039346656037ULL;
+    for (; *s; ++s) {
+        h ^= static_cast<uint8_t>(*s);
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
 
 struct OpenSynth {
     void* handle;
@@ -297,14 +317,16 @@ SynthFile* unregister_open(FileHandle h) {
     return found;
 }
 
-// Splits "Contents:/GameData/Job.bin" into mount "Contents" and virtual path "/GameData/Job.bin".
-bool split_mount_path(const char* path, std::string& mount, std::string& vpath) {
+// Splits "Contents:/GameData/Job.bin" into mount view "Contents" and virtual path "/GameData/Job.bin"
+// without heap allocations.
+bool split_mount_path_view(const char* path, const char*& mount_ptr, size_t& mount_len, const char*& vpath_ptr) {
     const char* colon = strstr(path, ":/");
     if (!colon || colon == path) return false;
-    mount.assign(path, colon - path);
+    mount_ptr = path;
+    mount_len = static_cast<size_t>(colon - path);
     const char* p = colon + 1;
     while (p[0] == '/' && p[1] == '/') ++p;
-    vpath = p;
+    vpath_ptr = p;
     return true;
 }
 
@@ -328,20 +350,33 @@ void build_overlay(const std::string& mount) {
     for (const auto& id : plan->applied_mods) fefw_nx::log("  mod: %s", id.c_str());
     if (!ok || !err.empty()) fefw_nx::log("  overlay engine reported: %s", err.empty() ? "failure" : err.c_str());
 
+    auto* cstrs = new std::vector<const char*>();
+    cstrs->reserve(plan->target_paths.size());
+    for (const auto& tp : plan->target_paths) {
+        cstrs->push_back(tp.c_str());
+        uint64_t h = fnv1a_cstr(tp.c_str());
+        g_target_bloom[(h >> 6) & 3] |= (1ULL << (h & 63));
+    }
+
     g_plan = plan;
+    g_target_cstrs = cstrs;
     g_live = new std::map<std::string, SynthFile*>();
     g_overlay_mount = new std::string(mount);
     fefw_nx::log("class overlay ready: %zu mod(s), %zu patched file(s), built on first open",
                  plan->applied_mods.size(), plan->target_paths.size());
 }
 
-// Returns the built file for `vpath` with one more reference, building it if no handle has it open.
+// Returns the built file for `vpath` with one more reference, reusing the LRU cache or building on miss.
 SynthFile* acquire_synth(const std::string& mount, const std::string& vpath) {
     spin_lock(&g_live_lock);
     SynthFile* f = nullptr;
     auto it = g_live->find(vpath);
     if (it != g_live->end()) {
         f = it->second;
+        if (f->refs == 0) {
+            g_cached_bytes -= f->data.size();
+            ++g_cache_hits;
+        }
     } else {
         std::string root = mount + ":";
         auto read_base = [&root](const std::string& vp, std::vector<uint8_t>& out) {
@@ -355,15 +390,18 @@ SynthFile* acquire_synth(const std::string& mount, const std::string& vpath) {
             (*g_live)[vpath] = f;
             g_live_bytes += f->data.size();
             ++g_build_count;
-            fefw_nx::log("built %s (%zu bytes; live %zu bytes in %zu file(s); builds %d)", vpath.c_str(),
-                         f->data.size(), g_live_bytes, g_live->size(), g_build_count);
+            fefw_nx::log("built %s (%zu bytes; live %zu bytes in %zu file(s); builds %d, hits %d)", vpath.c_str(),
+                         f->data.size(), g_live_bytes, g_live->size(), g_build_count, g_cache_hits);
         } else {
             fefw_nx::log("build of %s failed (%s): serving the base file", vpath.c_str(),
                          err.empty() ? "no base" : err.c_str());
             delete nf;
         }
     }
-    if (f) ++f->refs;
+    if (f) {
+        ++f->refs;
+        f->last_used = ++g_lru_clock;
+    }
     spin_unlock(&g_live_lock);
     return f;
 }
@@ -371,10 +409,33 @@ SynthFile* acquire_synth(const std::string& mount, const std::string& vpath) {
 void release_synth(SynthFile* f) {
     spin_lock(&g_live_lock);
     if (--f->refs <= 0) {
-        g_live->erase(f->vpath);
-        g_live_bytes -= f->data.size();
-        fefw_nx::log("freed %s (%zu bytes; live %zu bytes)", f->vpath.c_str(), f->data.size(), g_live_bytes);
-        delete f;
+        f->refs = 0;
+        if (f->data.size() > kSynthCacheMaxFileBytes) {
+            g_live->erase(f->vpath);
+            g_live_bytes -= f->data.size();
+            fefw_nx::log("freed %s (%zu bytes; live %zu bytes)", f->vpath.c_str(), f->data.size(), g_live_bytes);
+            delete f;
+        } else {
+            f->last_used = ++g_lru_clock;
+            g_cached_bytes += f->data.size();
+            while (g_cached_bytes > kSynthCacheMaxBytes) {
+                auto evict = g_live->end();
+                for (auto it = g_live->begin(); it != g_live->end(); ++it) {
+                    if (it->second->refs == 0 &&
+                        (evict == g_live->end() || it->second->last_used < evict->second->last_used)) {
+                        evict = it;
+                    }
+                }
+                if (evict == g_live->end()) break;
+                SynthFile* ev = evict->second;
+                g_live->erase(evict);
+                g_live_bytes -= ev->data.size();
+                g_cached_bytes -= ev->data.size();
+                fefw_nx::log("evicted %s (%zu bytes; cached %zu bytes)", ev->vpath.c_str(), ev->data.size(),
+                             g_cached_bytes);
+                delete ev;
+            }
+        }
     }
     spin_unlock(&g_live_lock);
 }
@@ -430,9 +491,24 @@ void maybe_build_overlay(const std::string& mount) {
     spin_unlock(&g_overlay_lock);
 }
 
-bool is_target(const std::string& mount, const std::string& vpath) {
-    if (__atomic_load_n(&g_overlay_state, __ATOMIC_ACQUIRE) != 2 || !g_plan) return false;
-    return *g_overlay_mount == mount && g_plan->targets(vpath);
+bool is_target_cstr(const char* mount_ptr, size_t mount_len, const char* vpath_ptr) {
+    if (__atomic_load_n(&g_overlay_state, __ATOMIC_ACQUIRE) != 2 || !g_target_cstrs || g_target_cstrs->empty())
+        return false;
+    if (mount_len != g_overlay_mount->size() || memcmp(mount_ptr, g_overlay_mount->data(), mount_len) != 0)
+        return false;
+    uint64_t h = fnv1a_cstr(vpath_ptr);
+    if ((g_target_bloom[(h >> 6) & 3] & (1ULL << (h & 63))) == 0) return false;
+    size_t lo = 0, hi = g_target_cstrs->size();
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        int cmp = strcmp((*g_target_cstrs)[mid], vpath_ptr);
+        if (cmp == 0) return true;
+        if (cmp < 0)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return false;
 }
 
 }  // namespace
@@ -457,14 +533,19 @@ namespace fs {
 
 FEFW_EXPORT Result OpenFile(FileHandle* out, const char* path, int mode) {
     if (!ensure_real()) return 0x2EE202;  // fs ResultNotImplemented-ish; should never happen
-    std::string mount, vpath;
-    bool in_mount = (mode == kOpenModeRead) && path && split_mount_path(path, mount, vpath);
-    if (in_mount) maybe_build_overlay(mount);
+    const char* mount_ptr = nullptr;
+    size_t mount_len = 0;
+    const char* vpath_ptr = nullptr;
+    bool in_mount = (mode == kOpenModeRead) && path && split_mount_path_view(path, mount_ptr, mount_len, vpath_ptr);
+    if (in_mount && __atomic_load_n(&g_overlay_state, __ATOMIC_ACQUIRE) != 2) {
+        maybe_build_overlay(std::string(mount_ptr, mount_len));
+    }
     Result r = g_real.OpenFile(out, path, mode);
     if (r == kResultSuccess && in_mount) {
-        fefw_nx::note_game_file(vpath.c_str());
-        if (is_target(mount, vpath)) {
-            if (SynthFile* f = acquire_synth(mount, vpath)) {
+        fefw_nx::note_game_file(vpath_ptr);
+        if (is_target_cstr(mount_ptr, mount_len, vpath_ptr)) {
+            std::string vpath(vpath_ptr);
+            if (SynthFile* f = acquire_synth(*g_overlay_mount, vpath)) {
                 if (register_open(*out, f)) {
                     fefw_nx::log("serving synthesized %s", path);
                 } else {

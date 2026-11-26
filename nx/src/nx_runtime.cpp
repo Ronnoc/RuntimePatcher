@@ -42,14 +42,68 @@ void log(const char* fmt, ...) {
     va_end(ap);
 }
 
+namespace {
+
+constexpr int kReadableCacheSlots = 8;
+constexpr size_t kReadableCacheMinRegion = 0x10000;  // 64 KiB+: static segments, main heap, thread stacks
+
+struct ReadableCacheEntry {
+    uint32_t seq;  // 0 = empty, odd = writing, even > 0 = valid
+    uintptr_t base;
+    uintptr_t end;
+};
+
+ReadableCacheEntry g_readable_cache[kReadableCacheSlots] = {};
+volatile int g_readable_cache_lock = 0;
+uint32_t g_readable_cache_next = 0;
+
+bool readable_cache_hit(uintptr_t addr, uintptr_t end) {
+    for (int i = 0; i < kReadableCacheSlots; ++i) {
+        uint32_t s1 = __atomic_load_n(&g_readable_cache[i].seq, __ATOMIC_ACQUIRE);
+        if (s1 == 0 || (s1 & 1u)) continue;
+        uintptr_t b = __atomic_load_n(&g_readable_cache[i].base, __ATOMIC_RELAXED);
+        uintptr_t e = __atomic_load_n(&g_readable_cache[i].end, __ATOMIC_RELAXED);
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        uint32_t s2 = __atomic_load_n(&g_readable_cache[i].seq, __ATOMIC_RELAXED);
+        if (s1 == s2 && addr >= b && end <= e) return true;
+    }
+    return false;
+}
+
+void readable_cache_insert(uintptr_t base, uintptr_t end) {
+    if (end <= base || (end - base) < kReadableCacheMinRegion) return;
+    // Non-blocking try-lock: on contention just skip updating the cache.
+    if (__atomic_exchange_n(&g_readable_cache_lock, 1, __ATOMIC_ACQUIRE) != 0) return;
+    int slot = -1;
+    for (int i = 0; i < kReadableCacheSlots; ++i) {
+        if (g_readable_cache[i].seq != 0 && g_readable_cache[i].base == base && g_readable_cache[i].end == end) {
+            __atomic_store_n(&g_readable_cache_lock, 0, __ATOMIC_RELEASE);
+            return;
+        }
+        if (slot < 0 && g_readable_cache[i].seq == 0) slot = i;
+    }
+    if (slot < 0) slot = static_cast<int>((g_readable_cache_next++) & (kReadableCacheSlots - 1));
+    uint32_t s = g_readable_cache[slot].seq;
+    __atomic_store_n(&g_readable_cache[slot].seq, s + 1, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    __atomic_store_n(&g_readable_cache[slot].base, base, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_readable_cache[slot].end, end, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_readable_cache[slot].seq, (s + 2) ? (s + 2) : 2u, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_readable_cache_lock, 0, __ATOMIC_RELEASE);
+}
+
+}  // namespace
+
 bool is_readable(uintptr_t addr, size_t size) {
     if (!addr || addr + size < addr) return false;
     uintptr_t end = addr + (size ? size : 1);
+    if (readable_cache_hit(addr, end)) return true;
     while (addr < end) {
         MemoryInfo mi{};
         if (svc_query_memory(&mi, addr) != 0 || (mi.perm & 1) == 0 || mi.type == 0) return false;
         uintptr_t next = mi.addr + mi.size;
         if (next <= addr) return false;
+        readable_cache_insert(static_cast<uintptr_t>(mi.addr), next);
         addr = next;
     }
     return true;
