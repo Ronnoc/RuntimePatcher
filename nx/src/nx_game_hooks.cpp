@@ -111,9 +111,14 @@ MenuProvider g_menu_providers[kMaxCallbacks];
 int g_menu_provider_count = 0;
 
 constexpr int kMaxMenuGroups = 8;
+struct GroupProvider {
+    FefwMenuProviderFn fn;
+    void* user;
+    int order;
+};
 struct MenuGroup {
     char name[64];
-    MenuProvider providers[kMaxCallbacks];
+    GroupProvider providers[kMaxCallbacks];
     int count;
     FefwMenuEntry entry;
 };
@@ -132,7 +137,19 @@ int group_menu_confirm(void* user, void* item) {
     void* sub = menu_open_submenu(item);
     if (!sub) return FEFW_MENU_IGNORED;
     int n = __atomic_load_n(&g->count, __ATOMIC_ACQUIRE);
-    for (int i = 0; i < n; ++i) g->providers[i].fn(g->providers[i].user, sub);
+    if (n > kMaxCallbacks) n = kMaxCallbacks;
+    GroupProvider sorted[kMaxCallbacks];
+    for (int i = 0; i < n; ++i) sorted[i] = g->providers[i];
+    for (int i = 1; i < n; ++i) {
+        GroupProvider key = sorted[i];
+        int j = i - 1;
+        while (j >= 0 && sorted[j].order > key.order) {
+            sorted[j + 1] = sorted[j];
+            --j;
+        }
+        sorted[j + 1] = key;
+    }
+    for (int i = 0; i < n; ++i) sorted[i].fn(sorted[i].user, sub);
     return FEFW_MENU_OPENED;
 }
 
@@ -190,7 +207,7 @@ int register_system_menu_provider(FefwMenuProviderFn fn, void* user) {
     return ok;
 }
 
-int register_menu_group_provider(const char* group_name, FefwMenuProviderFn fn, void* user) {
+int register_menu_group_provider_ordered(const char* group_name, int order, FefwMenuProviderFn fn, void* user) {
     if (!group_name || !group_name[0] || strlen(group_name) >= sizeof(g_menu_groups[0].name) || !fn) return 0;
     lock(&g_reg_lock);
     int gi = -1;
@@ -206,7 +223,7 @@ int register_menu_group_provider(const char* group_name, FefwMenuProviderFn fn, 
             gi = g_menu_group_count;
             MenuGroup& g = g_menu_groups[gi];
             snprintf(g.name, sizeof(g.name), "%s", group_name);
-            g.providers[0] = {fn, user};
+            g.providers[0] = {fn, user, order};
             g.entry = {&group_menu_text, &group_menu_confirm, &g};
             __atomic_store_n(&g.count, 1, __ATOMIC_RELEASE);
             __atomic_store_n(&g_menu_group_count, g_menu_group_count + 1, __ATOMIC_RELEASE);
@@ -215,13 +232,17 @@ int register_menu_group_provider(const char* group_name, FefwMenuProviderFn fn, 
     } else {
         MenuGroup& g = g_menu_groups[gi];
         if (g.count < kMaxCallbacks) {
-            g.providers[g.count] = {fn, user};
+            g.providers[g.count] = {fn, user, order};
             __atomic_store_n(&g.count, g.count + 1, __ATOMIC_RELEASE);
             ok = 1;
         }
     }
     unlock(&g_reg_lock);
     return ok;
+}
+
+int register_menu_group_provider(const char* group_name, FefwMenuProviderFn fn, void* user) {
+    return register_menu_group_provider_ordered(group_name, 0, fn, user);
 }
 
 // Mid-function hook slots: slot k is the k-th `mid_hooks` entry of the game profile, entered through the export
@@ -525,6 +546,7 @@ void fefw_nx::load_plugins(const char* mount, PluginReadFn read_file, PluginList
     g_api.settings_set = &fefw_nx::settings_set;
     g_api.menu_set_step = &menu_set_step;
     g_api.register_menu_group_provider = &register_menu_group_provider;
+    g_api.register_menu_group_provider_ordered = &register_menu_group_provider_ordered;
 
 #if FEFW_NX_NRO
     auto ro_init = static_cast<Result (*)()>(nullptr);

@@ -120,9 +120,15 @@ typedef struct FefwApi {
 
     // (appended to version 3; check `size`) Registers a provider under a shared submenu of the System settings menu
     // named `group_name` (UTF-8, at most 63 bytes). Providers that share a `group_name` are merged into one top-level
-    // entry; opening it calls each provider in registration order to populate the submenu. Returns 1 on success, 0 on
-    // failure.
+    // entry; opening it calls each provider in ascending `order` (0 here; ties keep registration order) to populate
+    // the submenu. Returns 1 on success, 0 on failure.
     int (*register_menu_group_provider)(const char* group_name, FefwMenuProviderFn fn, void* user);
+
+    // (appended to version 3; check `size`) As register_menu_group_provider, with an explicit sort key `order`:
+    // providers in the same group are invoked in ascending `order` (ties keep registration order).
+    // register_menu_group_provider uses `order = 0`, so negative values appear before default providers and
+    // positive values appear after them. Returns 1 on success, 0 on failure.
+    int (*register_menu_group_provider_ordered)(const char* group_name, int order, FefwMenuProviderFn fn, void* user);
 } FefwApi;
 
 #define FEFW_SETTINGS_NOT_READY (-2)

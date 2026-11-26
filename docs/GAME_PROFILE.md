@@ -45,8 +45,8 @@ or `"0x..."` strings; keys starting with `_` and `note` fields are ignored.
   that name with the registers x0..x30 (callbacks may change them), then runs the original instruction.
   - Plugins subscribe with `api->register_mid_hook("my_hook", fn, user)`; several sites may share a name. A name
     that is not in the profile simply returns 0, so plugins can degrade gracefully.
-  - `system_menu` is used by the runtime itself for the System menu service (`register_system_menu_provider` and
-    `register_menu_group_provider`); `game.SYSTEM_MENU_REG` names the register holding the menu there.
+  - `system_menu` is used by the runtime itself for the System menu service (`register_system_menu_provider`,
+    `register_menu_group_provider`, and `register_menu_group_provider_ordered`); `game.SYSTEM_MENU_REG` names the register holding the menu there.
 - `game`: becomes `FEFW_GAME_<NAME>` macros in `build/nx/gen/fefw_game_offsets.h`, used by `nx/src/nx_game_hooks.cpp`.
 
 Everything else (main's build id, PLT/GOT slots of the redirected imports, `malloc`, the sdk symbol offsets, and
