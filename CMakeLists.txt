@@ -20,6 +20,7 @@ add_library(fefw_class_foundation STATIC
     src/msbt_patcher.cpp
     src/bntx_patcher.cpp
     src/vfs_overlay.cpp
+    src/plugin_host_core.cpp
 )
 
 set_target_properties(fefw_class_foundation PROPERTIES POSITION_INDEPENDENT_CODE ON)

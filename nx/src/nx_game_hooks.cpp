@@ -2,8 +2,7 @@
 // FEFW RuntimePatcher — game-side services for plugins (NRO loader only).
 //
 //   * nn::hid::GetNpadState hooks  -> per-frame callbacks + button injection
-//   * System menu hook             -> plugin menu providers
-//   * Menu service                 -> native menu item clones
+//   * System menu hook             -> shared MenuHost (plugin_host_core.cpp)
 //   * Plugin host                  -> <mount>:/fefw/plugins/*.nro loaded through nn::ro
 //
 // Game addresses come from the game profile (build/nx/gen/fefw_game_offsets.h, see tools/game_profile.py).
@@ -15,6 +14,7 @@
 #include <string.h>
 
 #include "fefw_foundation/plugin_api.h"
+#include "fefw_foundation/plugin_host_core.h"
 #include "fefw_game_offsets.h"
 #include "nx_runtime.h"
 #include "nx_settings.h"
@@ -46,186 +46,27 @@ uint32_t LookupModuleSymbol(unsigned long*, const Module*, const char*);
 
 namespace {
 
-// ------------------------------------------------------------------------------------------------
-// Game build constants (main-relative)
-// ------------------------------------------------------------------------------------------------
-constexpr uintptr_t kSigMenuResume = FEFW_GAME_MENU_RESUME;          // instruction after the menu hook site
+constexpr uintptr_t kSigMenuResume = FEFW_GAME_MENU_RESUME;  // instruction after the menu hook site
 constexpr uint32_t kSigMenuResumeInsn = FEFW_GAME_MENU_RESUME_INSN;
-constexpr uintptr_t kUiHeapGot = FEFW_GAME_UI_HEAP_GOT;              // GOT slot -> &heap*
-constexpr uintptr_t kUiAlloc = FEFW_GAME_UI_ALLOC;                   // void* alloc(heap, size, align, flags)
-constexpr uintptr_t kUiSubmenu = FEFW_GAME_UI_SUBMENU;               // void* submenu(parent, const u64 info[3])
-constexpr uintptr_t kUiAddItem = FEFW_GAME_UI_ADD_ITEM;              // void add_item(menu, item)
-constexpr uintptr_t kUiRefresh = FEFW_GAME_UI_REFRESH;               // void refresh(item)
-constexpr uintptr_t kUiItemVtablePrefix = FEFW_GAME_UI_ITEM_VTABLE;  // menu item vtable incl. offset-to-top + RTTI
-constexpr size_t kUiItemVtableBytes = FEFW_GAME_UI_ITEM_VTABLE_BYTES;
-constexpr size_t kVtText = FEFW_GAME_VT_TEXT, kVtConfirm = FEFW_GAME_VT_CONFIRM, kVtRight = FEFW_GAME_VT_RIGHT,
-                 kVtLeft = FEFW_GAME_VT_LEFT;
 
 uintptr_t g_main = 0;
-bool g_menu_ok = false;
-
-uintptr_t self_base() { return fefw_nx::find_module_base(reinterpret_cast<uintptr_t>(&self_base)); }
-
-uintptr_t main_base() {
-    if (g_main) return g_main;
-#if FEFW_NX_NRO
-    // malloc is imported from main (see the build's import report): its address lies in main's .text.
-    uintptr_t m = reinterpret_cast<uintptr_t>(&malloc);
-#else
-    uintptr_t m = fefw_nx::lookup_symbol_in_other_modules(self_base(), "malloc");
-#endif
-    uintptr_t base = m ? fefw_nx::find_module_base(m) : 0;
-    if (base && fefw_nx::is_readable(base + kSigMenuResume, 4)) {
-        g_menu_ok = *reinterpret_cast<const uint32_t*>(base + kSigMenuResume) == kSigMenuResumeInsn;
-    }
-    g_main = base;
-    fefw_nx::log("game services: main @ %p, menu service %s", reinterpret_cast<void*>(base),
-                 g_menu_ok ? "enabled" : "DISABLED (unknown game build)");
-    return base;
-}
-
-template <typename T>
-T game_fn(uintptr_t off) {
-    return reinterpret_cast<T>(main_base() + off);
-}
+fefw_foundation::MenuHost g_menu_host;
 
 volatile int g_reg_lock = 0;
 void lock(volatile int* l) {
     while (__atomic_exchange_n(l, 1, __ATOMIC_ACQUIRE) != 0) fefw_nx::sleep_ns(100000);
 }
 void unlock(volatile int* l) { __atomic_store_n(l, 0, __ATOMIC_RELEASE); }
+void reg_lock() { lock(&g_reg_lock); }
+void reg_unlock() { unlock(&g_reg_lock); }
 
-// ------------------------------------------------------------------------------------------------
-// Registries
-// ------------------------------------------------------------------------------------------------
-constexpr int kMaxCallbacks = 16;
-struct MenuProvider {
-    FefwMenuProviderFn fn;
-    void* user;
-};
-struct FrameCallback {
-    FefwFrameFn fn;
-    void* user;
-};
-MenuProvider g_menu_providers[kMaxCallbacks];
-int g_menu_provider_count = 0;
-
-constexpr int kMaxMenuGroups = 8;
-constexpr int kMaxMenuSubgroups = 8;
-struct GroupProvider {
-    FefwMenuProviderFn fn;
-    void* user;
-    int order;
-    char item_key[64];
-};
-struct MenuSubgroup {
-    char id[64];
-    int group_idx;
-    int order;
-    const char* (*title_fn)(void* user, void* item);
-    void* title_user;
-    GroupProvider providers[kMaxCallbacks];
-    int count;
-    FefwMenuEntry entry;
-};
-struct MenuGroup {
-    char name[64];
-    GroupProvider providers[kMaxCallbacks];
-    int count;
-    FefwMenuEntry entry;
-};
-MenuGroup g_menu_groups[kMaxMenuGroups];
-int g_menu_group_count = 0;
-MenuSubgroup g_menu_subgroups[kMaxMenuSubgroups];
-int g_menu_subgroup_count = 0;
-
-void* menu_add_entry(void* menu, const FefwMenuEntry* entry);
-void* menu_open_submenu(void* item);
-
-const char* subgroup_menu_text(void* user, void* item) {
-    auto* sg = static_cast<MenuSubgroup*>(user);
-    if (sg->title_fn) {
-        const char* s = sg->title_fn(sg->title_user, item);
-        if (s && s[0]) return s;
-    }
-    return sg->id;
+uint64_t api_call_game(uintptr_t addr, const uint64_t* args, int nargs) {
+    uint64_t a[8] = {};
+    for (int i = 0; i < nargs && i < 8; ++i) a[i] = args[i];
+    // AAPCS64: unused argument registers are ignored by the callee
+    using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+    return reinterpret_cast<Fn>(addr)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
 }
-
-int subgroup_menu_confirm(void* user, void* item) {
-    auto* sg = static_cast<MenuSubgroup*>(user);
-    void* sub = menu_open_submenu(item);
-    if (!sub) return FEFW_MENU_IGNORED;
-    int n = __atomic_load_n(&sg->count, __ATOMIC_ACQUIRE);
-    if (n > kMaxCallbacks) n = kMaxCallbacks;
-    GroupProvider sorted[kMaxCallbacks];
-    for (int i = 0; i < n; ++i) sorted[i] = sg->providers[i];
-    for (int i = 1; i < n; ++i) {
-        GroupProvider key = sorted[i];
-        int j = i - 1;
-        while (j >= 0 && sorted[j].order > key.order) {
-            sorted[j + 1] = sorted[j];
-            --j;
-        }
-        sorted[j + 1] = key;
-    }
-    for (int i = 0; i < n; ++i) sorted[i].fn(sorted[i].user, sub);
-    return FEFW_MENU_OPENED;
-}
-
-void provide_subgroup_entry(void* user, void* menu) {
-    auto* sg = static_cast<MenuSubgroup*>(user);
-    menu_add_entry(menu, &sg->entry);
-}
-
-const char* group_menu_text(void* user, void*) {
-    return static_cast<MenuGroup*>(user)->name;
-}
-
-int group_menu_confirm(void* user, void* item) {
-    auto* g = static_cast<MenuGroup*>(user);
-    int gi = static_cast<int>(g - g_menu_groups);
-    void* sub = menu_open_submenu(item);
-    if (!sub) return FEFW_MENU_IGNORED;
-    int n = __atomic_load_n(&g->count, __ATOMIC_ACQUIRE);
-    if (n > kMaxCallbacks) n = kMaxCallbacks;
-    GroupProvider sorted[kMaxCallbacks + kMaxMenuSubgroups];
-    int total = 0;
-    for (int i = 0; i < n; ++i) sorted[total++] = g->providers[i];
-    int sn = __atomic_load_n(&g_menu_subgroup_count, __ATOMIC_ACQUIRE);
-    if (sn > kMaxMenuSubgroups) sn = kMaxMenuSubgroups;
-    for (int i = 0; i < sn; ++i) {
-        if (g_menu_subgroups[i].group_idx == gi) {
-            GroupProvider p{};
-            p.fn = &provide_subgroup_entry;
-            p.user = &g_menu_subgroups[i];
-            p.order = g_menu_subgroups[i].order;
-            sorted[total++] = p;
-        }
-    }
-    for (int i = 1; i < total; ++i) {
-        GroupProvider key = sorted[i];
-        int j = i - 1;
-        while (j >= 0 && sorted[j].order > key.order) {
-            sorted[j + 1] = sorted[j];
-            --j;
-        }
-        sorted[j + 1] = key;
-    }
-    for (int i = 0; i < total; ++i) sorted[i].fn(sorted[i].user, sub);
-    return FEFW_MENU_OPENED;
-}
-
-FrameCallback g_frame_callbacks[kMaxCallbacks];
-int g_frame_callback_count = 0;
-
-struct MenuClosedCallback {
-    FefwMenuClosedFn fn;
-    void* user;
-};
-MenuClosedCallback g_menu_closed[kMaxCallbacks];
-int g_menu_closed_count = 0;
-int g_live_rows = 0;            // plugin menu rows the game hasn't destroyed yet (game thread only)
-int g_menu_closed_pending = 0;  // set when g_live_rows reaches 0; callbacks run from the next frame tick
 
 // call_game with x8 = result (AAPCS64 indirect result location).
 uint64_t api_call_game_sret(uintptr_t addr, void* result, const uint64_t* args, int nargs) {
@@ -250,140 +91,96 @@ uint64_t api_call_game_sret(uintptr_t addr, void* result, const uint64_t* args, 
     return x0;
 }
 
-int register_menu_closed_callback(FefwMenuClosedFn fn, void* user) {
-    lock(&g_reg_lock);
-    int ok = fn && g_menu_closed_count < kMaxCallbacks;
-    if (ok) g_menu_closed[g_menu_closed_count++] = {fn, user};
-    unlock(&g_reg_lock);
-    return ok;
+// Native ARM64 vtable slot targets forwarded to shared MenuHost.
+const char* item_text(fefw_foundation::PluginMenuItem* item) { return fefw_foundation::MenuHost::handle_text(item); }
+int item_confirm(fefw_foundation::PluginMenuItem* item) { return fefw_foundation::MenuHost::handle_confirm(item); }
+int item_right(fefw_foundation::PluginMenuItem* item, int) { return fefw_foundation::MenuHost::handle_step(item, 1); }
+int item_left(fefw_foundation::PluginMenuItem* item, int) { return fefw_foundation::MenuHost::handle_step(item, -1); }
+void item_dtor_complete(fefw_foundation::PluginMenuItem* item) { g_menu_host.handle_dtor(item, 0); }
+void item_dtor_deleting(fefw_foundation::PluginMenuItem* item) { g_menu_host.handle_dtor(item, 1); }
+
+uintptr_t self_base() { return fefw_nx::find_module_base(reinterpret_cast<uintptr_t>(&self_base)); }
+
+uintptr_t main_base() {
+    if (g_main) return g_main;
+#if FEFW_NX_NRO
+    // malloc is imported from main (see the build's import report): its address lies in main's .text.
+    uintptr_t m = reinterpret_cast<uintptr_t>(&malloc);
+#else
+    uintptr_t m = fefw_nx::lookup_symbol_in_other_modules(self_base(), "malloc");
+#endif
+    uintptr_t base = m ? fefw_nx::find_module_base(m) : 0;
+    bool menu_ok = false;
+    if (base && fefw_nx::is_readable(base + kSigMenuResume, 4) &&
+        *reinterpret_cast<const uint32_t*>(base + kSigMenuResume) == kSigMenuResumeInsn) {
+        FefwMenuConfig cfg{};
+        cfg.ui_heap_got = FEFW_GAME_UI_HEAP_GOT;
+        cfg.ui_alloc = FEFW_GAME_UI_ALLOC;
+        cfg.ui_submenu = FEFW_GAME_UI_SUBMENU;
+        cfg.ui_add_item = FEFW_GAME_UI_ADD_ITEM;
+        cfg.ui_refresh = FEFW_GAME_UI_REFRESH;
+        cfg.ui_item_vtable = FEFW_GAME_UI_ITEM_VTABLE;
+        cfg.ui_item_vtable_bytes = FEFW_GAME_UI_ITEM_VTABLE_BYTES;
+        cfg.vt_text = FEFW_GAME_VT_TEXT;
+        cfg.vt_confirm = FEFW_GAME_VT_CONFIRM;
+        cfg.vt_right = FEFW_GAME_VT_RIGHT;
+        cfg.vt_left = FEFW_GAME_VT_LEFT;
+
+        fefw_foundation::MenuPlatform plat{};
+        plat.main_base = base;
+        plat.call_game = &api_call_game;
+        plat.slot_text = reinterpret_cast<uint64_t>(&item_text);
+        plat.slot_confirm = reinterpret_cast<uint64_t>(&item_confirm);
+        plat.slot_left = reinterpret_cast<uint64_t>(&item_left);
+        plat.slot_right = reinterpret_cast<uint64_t>(&item_right);
+        plat.slot_dtor[0] = reinterpret_cast<uint64_t>(&item_dtor_complete);
+        plat.slot_dtor[1] = reinterpret_cast<uint64_t>(&item_dtor_deleting);
+        plat.lock_fn = &reg_lock;
+        plat.unlock_fn = &reg_unlock;
+        menu_ok = g_menu_host.init(cfg, plat);
+    }
+    g_main = base;
+    fefw_nx::log("game services: main @ %p, menu service %s", reinterpret_cast<void*>(base),
+                 menu_ok ? "enabled" : "DISABLED (unknown game build)");
+    return base;
 }
 
+// ------------------------------------------------------------------------------------------------
+// Menu API wrappers -> shared MenuHost
+// ------------------------------------------------------------------------------------------------
 int register_system_menu_provider(FefwMenuProviderFn fn, void* user) {
-    lock(&g_reg_lock);
-    int ok = fn && g_menu_provider_count < kMaxCallbacks;
-    if (ok) {
-        g_menu_providers[g_menu_provider_count] = {fn, user};
-        __atomic_store_n(&g_menu_provider_count, g_menu_provider_count + 1, __ATOMIC_RELEASE);
-    }
-    unlock(&g_reg_lock);
-    return ok;
+    return g_menu_host.register_system_menu_provider(fn, user);
 }
-
-int register_menu_group_provider_ordered(const char* group_name, int order, FefwMenuProviderFn fn, void* user) {
-    if (!group_name || !group_name[0] || strlen(group_name) >= sizeof(g_menu_groups[0].name) || !fn) return 0;
-    lock(&g_reg_lock);
-    int gi = -1;
-    for (int i = 0; i < g_menu_group_count; ++i) {
-        if (strcmp(g_menu_groups[i].name, group_name) == 0) {
-            gi = i;
-            break;
-        }
-    }
-    int ok = 0;
-    if (gi < 0) {
-        if (g_menu_group_count < kMaxMenuGroups) {
-            gi = g_menu_group_count;
-            MenuGroup& g = g_menu_groups[gi];
-            snprintf(g.name, sizeof(g.name), "%s", group_name);
-            g.providers[0] = {fn, user, order, ""};
-            g.entry = {&group_menu_text, &group_menu_confirm, &g};
-            __atomic_store_n(&g.count, 1, __ATOMIC_RELEASE);
-            __atomic_store_n(&g_menu_group_count, g_menu_group_count + 1, __ATOMIC_RELEASE);
-            ok = 1;
-        }
-    } else {
-        MenuGroup& g = g_menu_groups[gi];
-        if (g.count < kMaxCallbacks) {
-            g.providers[g.count] = {fn, user, order, ""};
-            __atomic_store_n(&g.count, g.count + 1, __ATOMIC_RELEASE);
-            ok = 1;
-        }
-    }
-    unlock(&g_reg_lock);
-    return ok;
-}
-
 int register_menu_group_provider(const char* group_name, FefwMenuProviderFn fn, void* user) {
-    return register_menu_group_provider_ordered(group_name, 0, fn, user);
+    return g_menu_host.register_menu_group_provider(group_name, fn, user);
 }
-
+int register_menu_group_provider_ordered(const char* group_name, int order, FefwMenuProviderFn fn, void* user) {
+    return g_menu_host.register_menu_group_provider_ordered(group_name, order, fn, user);
+}
 int register_menu_subgroup_provider(const char* group_name, const char* sub_id, int sub_order,
                                     const char* (*title_fn)(void* user, void* item), void* title_user,
                                     int item_order, const char* item_key, FefwMenuProviderFn fn, void* user) {
-    if (!group_name || !group_name[0] || strlen(group_name) >= sizeof(g_menu_groups[0].name) || !sub_id || !sub_id[0] ||
-        strlen(sub_id) >= sizeof(g_menu_subgroups[0].id) || !fn)
-        return 0;
-    if (item_key && strlen(item_key) >= sizeof(g_menu_subgroups[0].providers[0].item_key)) return 0;
-    lock(&g_reg_lock);
-    int gi = -1;
-    for (int i = 0; i < g_menu_group_count; ++i) {
-        if (strcmp(g_menu_groups[i].name, group_name) == 0) {
-            gi = i;
-            break;
-        }
-    }
-    if (gi < 0) {
-        if (g_menu_group_count >= kMaxMenuGroups) {
-            unlock(&g_reg_lock);
-            return 0;
-        }
-        gi = g_menu_group_count;
-        MenuGroup& g = g_menu_groups[gi];
-        snprintf(g.name, sizeof(g.name), "%s", group_name);
-        g.entry = {&group_menu_text, &group_menu_confirm, &g};
-        __atomic_store_n(&g.count, 0, __ATOMIC_RELEASE);
-        __atomic_store_n(&g_menu_group_count, g_menu_group_count + 1, __ATOMIC_RELEASE);
-    }
-    int si = -1;
-    for (int i = 0; i < g_menu_subgroup_count; ++i) {
-        if (g_menu_subgroups[i].group_idx == gi && strcmp(g_menu_subgroups[i].id, sub_id) == 0) {
-            si = i;
-            break;
-        }
-    }
-    int ok = 0;
-    if (si < 0) {
-        if (g_menu_subgroup_count < kMaxMenuSubgroups) {
-            si = g_menu_subgroup_count;
-            MenuSubgroup& sg = g_menu_subgroups[si];
-            snprintf(sg.id, sizeof(sg.id), "%s", sub_id);
-            sg.group_idx = gi;
-            sg.order = sub_order;
-            sg.title_fn = title_fn;
-            sg.title_user = title_user;
-            sg.entry = {&subgroup_menu_text, &subgroup_menu_confirm, &sg};
-            sg.providers[0] = {fn, user, item_order, ""};
-            if (item_key && item_key[0]) snprintf(sg.providers[0].item_key, sizeof(sg.providers[0].item_key), "%s", item_key);
-            __atomic_store_n(&sg.count, 1, __ATOMIC_RELEASE);
-            __atomic_store_n(&g_menu_subgroup_count, g_menu_subgroup_count + 1, __ATOMIC_RELEASE);
-            ok = 1;
-        }
-    } else {
-        MenuSubgroup& sg = g_menu_subgroups[si];
-        if (sub_order < sg.order) sg.order = sub_order;
-        if (!sg.title_fn && title_fn) {
-            sg.title_fn = title_fn;
-            sg.title_user = title_user;
-        }
-        if (item_key && item_key[0]) {
-            for (int i = 0; i < sg.count; ++i) {
-                if (strcmp(sg.providers[i].item_key, item_key) == 0) {
-                    unlock(&g_reg_lock);
-                    return 1;
-                }
-            }
-        }
-        if (sg.count < kMaxCallbacks) {
-            GroupProvider& p = sg.providers[sg.count];
-            p = {fn, user, item_order, ""};
-            if (item_key && item_key[0]) snprintf(p.item_key, sizeof(p.item_key), "%s", item_key);
-            __atomic_store_n(&sg.count, sg.count + 1, __ATOMIC_RELEASE);
-            ok = 1;
-        }
-    }
-    unlock(&g_reg_lock);
-    return ok;
+    return g_menu_host.register_menu_subgroup_provider(group_name, sub_id, sub_order, title_fn, title_user,
+                                                       item_order, item_key, fn, user);
 }
+int register_menu_closed_callback(FefwMenuClosedFn fn, void* user) {
+    return g_menu_host.register_menu_closed_callback(fn, user);
+}
+void* menu_add_entry(void* menu, const FefwMenuEntry* entry) { return g_menu_host.add_entry(menu, entry); }
+void* menu_open_submenu(void* item) { return g_menu_host.open_submenu(item); }
+void menu_refresh(void* item) { g_menu_host.refresh(item); }
+int menu_set_step(void* item, FefwMenuStepFn fn) { return fefw_foundation::MenuHost::set_step(item, fn); }
+
+// ------------------------------------------------------------------------------------------------
+// Mid-function hooks & frame callbacks
+// ------------------------------------------------------------------------------------------------
+constexpr int kMaxCallbacks = 32;
+struct FrameCallback {
+    FefwFrameFn fn;
+    void* user;
+};
+FrameCallback g_frame_callbacks[kMaxCallbacks];
+int g_frame_callback_count = 0;
 
 // Mid-function hook slots: slot k is the k-th `mid_hooks` entry of the game profile, entered through the export
 // fefw_mid_<k>. Names (FEFW_MID_HOOK_NAMES) come from the profile, so no hook site is known to this code.
@@ -422,17 +219,13 @@ void run_mid_hooks(int slot, uint64_t* ctx) {
 // The System menu service: the profile's "system_menu" hook site, where the menu container is in register
 // FEFW_GAME_SYSTEM_MENU_REG.
 void on_system_menu(void*, uint64_t* ctx) {
-    if (!main_base() || !g_menu_ok) return;
-    void* menu = reinterpret_cast<void*>(ctx[FEFW_GAME_SYSTEM_MENU_REG]);
-    int n = __atomic_load_n(&g_menu_provider_count, __ATOMIC_ACQUIRE);
-    for (int i = 0; i < n; ++i) g_menu_providers[i].fn(g_menu_providers[i].user, menu);
-    int gn = __atomic_load_n(&g_menu_group_count, __ATOMIC_ACQUIRE);
-    for (int i = 0; i < gn; ++i) menu_add_entry(menu, &g_menu_groups[i].entry);
+    if (!main_base() || !g_menu_host.is_ready()) return;
+    g_menu_host.on_system_menu(reinterpret_cast<void*>(ctx[FEFW_GAME_SYSTEM_MENU_REG]));
 }
 
 int register_frame_callback(FefwFrameFn fn, void* user) {
     lock(&g_reg_lock);
-    int ok = g_frame_callback_count < kMaxCallbacks;
+    int ok = fn && g_frame_callback_count < kMaxCallbacks;
     if (ok) {
         g_frame_callbacks[g_frame_callback_count].fn = fn;
         g_frame_callbacks[g_frame_callback_count].user = user;
@@ -473,10 +266,7 @@ void frame_tick() {
         if (f) __atomic_store_n(&g_inject_frames, f - 1, __ATOMIC_RELEASE);
         int n = __atomic_load_n(&g_frame_callback_count, __ATOMIC_ACQUIRE);
         for (int i = 0; i < n; ++i) g_frame_callbacks[i].fn(g_frame_callbacks[i].user, g_frame);
-        if (__atomic_exchange_n(&g_menu_closed_pending, 0, __ATOMIC_ACQ_REL)) {
-            int m = __atomic_load_n(&g_menu_closed_count, __ATOMIC_ACQUIRE);
-            for (int i = 0; i < m; ++i) g_menu_closed[i].fn(g_menu_closed[i].user);
-        }
+        g_menu_host.flush_menu_closed();
         fefw_nx::settings_flush();
     }
     __atomic_store_n(&g_tick_busy, 0, __ATOMIC_RELEASE);
@@ -488,109 +278,6 @@ void post_npad(void* state) {
     if (__atomic_load_n(&g_inject_frames, __ATOMIC_ACQUIRE) && state) {
         reinterpret_cast<uint64_t*>(state)[1] |= __atomic_load_n(&g_inject_buttons, __ATOMIC_ACQUIRE);
     }
-}
-
-// ------------------------------------------------------------------------------------------------
-// Menu service: native ConfigMenuItem with a cloned vtable whose text/confirm slots point here.
-// ------------------------------------------------------------------------------------------------
-// Layout: native header, self pointer at +0xA0, then our data.
-struct PluginMenuItem {
-    uint8_t native[0xA0];          // engine ConfigMenuItem header
-    PluginMenuItem* owner;         // 0xA0: always self
-    const FefwMenuEntry* entry;    // 0xA8
-    uint64_t table[kUiItemVtableBytes / 8];
-    FefwMenuStepFn step;           // Left / Right, set by menu_set_step
-};
-static_assert(__builtin_offsetof(PluginMenuItem, owner) == 0xA0, "native ConfigMenuItem prefix");
-static_assert(sizeof(PluginMenuItem) <= 0x300, "menu items are allocated as 0x300 bytes");
-
-const char* item_text(PluginMenuItem* item) {
-    const FefwMenuEntry* e = item->entry;
-    const char* s = (e && e->text) ? e->text(e->user, item) : nullptr;
-    return s ? s : "";
-}
-
-int item_confirm(PluginMenuItem* item) {
-    if (item->native[0x52] != 1) return FEFW_MENU_IGNORED;  // row disabled
-    const FefwMenuEntry* e = item->entry;
-    return (e && e->confirm) ? e->confirm(e->user, item) : FEFW_MENU_IGNORED;
-}
-
-// Left / Right slots: (item, bool) -> 1 when the value changed, else 0 (as the game's own setting rows).
-int item_step(PluginMenuItem* item, int dir) {
-    if (item->native[0x52] != 1 || !item->step) return 0;
-    const FefwMenuEntry* e = item->entry;
-    return item->step(e ? e->user : nullptr, item, dir) ? 1 : 0;
-}
-int item_right(PluginMenuItem* item, int) { return item_step(item, 1); }
-int item_left(PluginMenuItem* item, int) { return item_step(item, -1); }
-
-int menu_set_step(void* item, FefwMenuStepFn fn) {
-    if (!item) return -1;
-    static_cast<PluginMenuItem*>(item)->step = fn;
-    return 0;
-}
-
-// Destructor slots 0 (complete) and 1 (deleting) of the cloned vtable: count the row out, then run the game's own.
-using ItemDtor = void (*)(PluginMenuItem*);
-ItemDtor g_item_dtor[2];
-
-void row_destroyed() {
-    if (__atomic_sub_fetch(&g_live_rows, 1, __ATOMIC_ACQ_REL) == 0)
-        __atomic_store_n(&g_menu_closed_pending, 1, __ATOMIC_RELEASE);
-}
-
-void item_dtor_complete(PluginMenuItem* item) {
-    row_destroyed();
-    g_item_dtor[0](item);
-}
-
-void item_dtor_deleting(PluginMenuItem* item) {
-    row_destroyed();
-    g_item_dtor[1](item);  // frees `item`
-}
-
-void* menu_add_entry(void* menu, const FefwMenuEntry* entry) {
-    if (!menu || !entry || !g_menu_ok) return nullptr;
-    void* heap = **reinterpret_cast<void***>(main_base() + kUiHeapGot);
-    auto alloc = game_fn<void* (*)(void*, size_t, unsigned, unsigned)>(kUiAlloc);
-    auto* item = static_cast<PluginMenuItem*>(alloc(heap, sizeof(PluginMenuItem), 16, 0));
-    if (!item) return nullptr;
-    memset(item->native, 0, sizeof(item->native));
-    memcpy(item->table, reinterpret_cast<const void*>(main_base() + kUiItemVtablePrefix), kUiItemVtableBytes);
-    uint64_t* vt = item->table + 2;  // skip offset-to-top + typeinfo
-    vt[kVtText / 8] = reinterpret_cast<uint64_t>(&item_text);
-    vt[kVtConfirm / 8] = reinterpret_cast<uint64_t>(&item_confirm);
-    vt[kVtRight / 8] = reinterpret_cast<uint64_t>(&item_right);
-    vt[kVtLeft / 8] = reinterpret_cast<uint64_t>(&item_left);
-    g_item_dtor[0] = reinterpret_cast<ItemDtor>(vt[0]);
-    g_item_dtor[1] = reinterpret_cast<ItemDtor>(vt[1]);
-    vt[0] = reinterpret_cast<uint64_t>(&item_dtor_complete);
-    vt[1] = reinterpret_cast<uint64_t>(&item_dtor_deleting);
-    __atomic_add_fetch(&g_live_rows, 1, __ATOMIC_ACQ_REL);
-    *reinterpret_cast<uint64_t**>(item->native) = vt;
-    *reinterpret_cast<uint32_t*>(item->native + 0x50) = 0x00010101;  // visible / enabled flags
-    item->owner = item;
-    item->entry = entry;
-    item->step = nullptr;
-    game_fn<void (*)(void*, void*)>(kUiAddItem)(menu, item);
-    return item;
-}
-
-void* menu_open_submenu(void* item) {
-    if (!item || !g_menu_ok) return nullptr;
-    void* parent = *reinterpret_cast<void**>(static_cast<uint8_t*>(item) + 8);
-    if (parent) {
-        void* bound = *reinterpret_cast<void**>(static_cast<uint8_t*>(parent) + 0x98);
-        if (bound) parent = bound;
-    }
-    if (!parent) return nullptr;
-    uint64_t info[3] = {reinterpret_cast<uint64_t>(item), 1, 0};
-    return game_fn<void* (*)(void*, const uint64_t*)>(kUiSubmenu)(parent, info);
-}
-
-void menu_refresh(void* item) {
-    if (item && g_menu_ok) game_fn<void (*)(void*)>(kUiRefresh)(item);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -608,14 +295,6 @@ int api_is_readable(uintptr_t addr, size_t size) { return fefw_nx::is_readable(a
 char g_language[8] = "";
 
 const char* api_get_language() { return g_language; }
-
-uint64_t api_call_game(uintptr_t addr, const uint64_t* args, int nargs) {
-    uint64_t a[8] = {};
-    for (int i = 0; i < nargs && i < 8; ++i) a[i] = args[i];
-    // AAPCS64: unused argument registers are ignored by the callee
-    using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
-    return reinterpret_cast<Fn>(addr)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
-}
 
 FefwApi g_api{};
 

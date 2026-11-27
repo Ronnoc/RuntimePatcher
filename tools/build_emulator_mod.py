@@ -243,7 +243,7 @@ def zstd_lib_dir() -> str:
 def collect_sources():
     zlib = zstd_lib_dir()
     cxx = [os.path.join(FOUNDATION_DIR, "src", f) for f in
-           ("game_table.cpp", "msbt_patcher.cpp", "bntx_patcher.cpp", "vfs_overlay.cpp")]
+           ("game_table.cpp", "msbt_patcher.cpp", "bntx_patcher.cpp", "vfs_overlay.cpp", "plugin_host_core.cpp")]
     cxx += sorted(glob.glob(os.path.join(NX_DIR, "src", "*.cpp")))
     c = []
     for sub in ("common", "compress", "decompress"):

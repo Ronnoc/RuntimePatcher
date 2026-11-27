@@ -8,6 +8,7 @@
 
 #include "fefw_foundation/game_table.h"
 #include "fefw_foundation/msbt_patcher.h"
+#include "fefw_foundation/plugin_host_core.h"
 
 using namespace fefw_foundation;
 
@@ -198,12 +199,210 @@ static void test_msbt_new_label_keeps_tsy1_parallel() {
     CHECK(get_u32(out, 0x12) == out.size());
 }
 
+static void test_settings_store() {
+    SettingsStore s;
+    const char* ini = "# comment\r\nalpha=1\r\nbeta=hello=world\n=bad\nbadline\nalpha=2\n";
+    s.parse_ini(ini, std::strlen(ini));
+    CHECK(s.count() == 2);
+    char buf[64]{};
+    CHECK(s.get("alpha", buf, sizeof(buf)) == 1 && std::strcmp(buf, "2") == 0);
+    CHECK(s.get("beta", buf, sizeof(buf)) == 11 && std::strcmp(buf, "hello=world") == 0);
+    CHECK(s.get("missing", buf, sizeof(buf)) == -1);
+
+    CHECK(s.set("bad=key", "1") == -1);
+    CHECK(s.set("bad\nkey", "1") == -1);
+    CHECK(s.set("ok", "bad\nval") == -1);
+    CHECK(s.set("gamma", "42") == 0);
+
+    SettingsStore overrides;
+    CHECK(overrides.set("alpha", "99") == 0);
+    CHECK(overrides.set("delta", "yes") == 0);
+    s.merge_from(overrides);
+    CHECK(s.get("alpha", buf, sizeof(buf)) == 2 && std::strcmp(buf, "99") == 0);
+    CHECK(s.get("delta", buf, sizeof(buf)) == 3 && std::strcmp(buf, "yes") == 0);
+
+    char out[512]{};
+    size_t n = s.format_ini(out, sizeof(out));
+    CHECK(n > 0);
+    SettingsStore round;
+    round.parse_ini(out, n);
+    CHECK(round.count() == s.count());
+    CHECK(round.get("gamma", buf, sizeof(buf)) == 2 && std::strcmp(buf, "42") == 0);
+}
+
+struct FakeGameEnv {
+    uint8_t mem[0x1000]{};
+    void* fake_heap = nullptr;
+    void* fake_heap_ptr = nullptr;
+    std::vector<PluginMenuItem*> allocated;
+    std::vector<std::pair<void*, PluginMenuItem*>> added;
+    int refreshed = 0;
+    int dtor_calls[2] = {0, 0};
+    uint8_t fake_parent[0x100]{};
+    uint8_t fake_submenu_a[0x40]{};
+    uint8_t fake_submenu_b[0x40]{};
+    int submenu_seq = 0;
+};
+
+static FakeGameEnv* g_fake_env = nullptr;
+
+static uint64_t fake_call_game(uintptr_t addr, const uint64_t* args, int nargs) {
+    auto* e = g_fake_env;
+    uintptr_t base = reinterpret_cast<uintptr_t>(e->mem);
+    if (addr == base + 0x100) {  // ui_alloc
+        CHECK(nargs == 4 && args[1] == sizeof(PluginMenuItem));
+        auto* item = new PluginMenuItem{};
+        e->allocated.push_back(item);
+        return reinterpret_cast<uint64_t>(item);
+    }
+    if (addr == base + 0x110) {  // ui_add_item
+        auto* item = reinterpret_cast<PluginMenuItem*>(args[1]);
+        *reinterpret_cast<void**>(item->native + 8) = e->fake_parent;
+        e->added.push_back({reinterpret_cast<void*>(args[0]), item});
+        return 0;
+    }
+    if (addr == base + 0x120) {  // ui_submenu
+        return reinterpret_cast<uint64_t>((e->submenu_seq++ == 0) ? e->fake_submenu_a : e->fake_submenu_b);
+    }
+    if (addr == base + 0x130) {  // ui_refresh
+        ++e->refreshed;
+        return 0;
+    }
+    if (addr == 0xDEAD0001ull) {
+        ++e->dtor_calls[0];
+        return 0;
+    }
+    if (addr == 0xDEAD0002ull) {
+        ++e->dtor_calls[1];
+        return 0;
+    }
+    return 0;
+}
+
+static void test_menu_host_groups_and_lifecycle() {
+    FakeGameEnv env;
+    g_fake_env = &env;
+    env.fake_heap = reinterpret_cast<void*>(0x1234);
+    env.fake_heap_ptr = &env.fake_heap;
+    uintptr_t base = reinterpret_cast<uintptr_t>(env.mem);
+    // Store &fake_heap_ptr at base + 0x200 (ui_heap_got)
+    void** heap_got = reinterpret_cast<void**>(env.mem + 0x200);
+    *heap_got = env.fake_heap_ptr;
+    // Fake vtable at base + 0x300 (0x248 bytes): slots 0 & 1 are orig dtors
+    uint64_t* fake_vt_prefix = reinterpret_cast<uint64_t*>(env.mem + 0x300);
+    fake_vt_prefix[2] = 0xDEAD0001ull;
+    fake_vt_prefix[3] = 0xDEAD0002ull;
+
+    FefwMenuConfig cfg{};
+    cfg.ui_heap_got = 0x200;
+    cfg.ui_alloc = 0x100;
+    cfg.ui_add_item = 0x110;
+    cfg.ui_submenu = 0x120;
+    cfg.ui_refresh = 0x130;
+    cfg.ui_item_vtable = 0x300;
+    cfg.ui_item_vtable_bytes = 0x248;
+    cfg.vt_text = 0x10;
+    cfg.vt_confirm = 0xC8;
+    cfg.vt_right = 0x138;
+    cfg.vt_left = 0x140;
+
+    MenuPlatform plat{};
+    plat.main_base = base;
+    plat.call_game = &fake_call_game;
+    plat.slot_text = 0xA001;
+    plat.slot_confirm = 0xA002;
+    plat.slot_left = 0xA003;
+    plat.slot_right = 0xA004;
+    plat.slot_dtor[0] = 0xA005;
+    plat.slot_dtor[1] = 0xA006;
+
+    MenuHost host;
+    CHECK(host.init(cfg, plat));
+
+    std::vector<std::string> log;
+    auto push_provider = [](void* user, void*) {
+        auto* p = static_cast<std::pair<std::vector<std::string>*, const char*>*>(user);
+        p->first->push_back(p->second);
+    };
+    std::pair<std::vector<std::string>*, const char*> p_root{&log, "root"};
+    std::pair<std::vector<std::string>*, const char*> p_late{&log, "late"};
+    std::pair<std::vector<std::string>*, const char*> p_early{&log, "early"};
+    std::pair<std::vector<std::string>*, const char*> p_sg_b{&log, "sg_b"};
+    std::pair<std::vector<std::string>*, const char*> p_sg_a{&log, "sg_a"};
+    std::pair<std::vector<std::string>*, const char*> p_sg_dup{&log, "sg_dup"};
+
+    auto title_fn = [](void*, void*) -> const char* { return "OptionsTitle"; };
+
+    CHECK(host.register_system_menu_provider(push_provider, &p_root) == 1);
+    CHECK(host.register_menu_group_provider_ordered("@Ronnoc", 20, push_provider, &p_late) == 1);
+    CHECK(host.register_menu_group_provider_ordered("@Ronnoc", -10, push_provider, &p_early) == 1);
+    CHECK(host.register_menu_subgroup_provider("@Ronnoc", "opts", 10, nullptr, nullptr, 5, "k_b", push_provider,
+                                               &p_sg_b) == 1);
+    CHECK(host.register_menu_subgroup_provider("@Ronnoc", "opts", 0, title_fn, nullptr, 1, "k_a", push_provider,
+                                               &p_sg_a) == 1);
+    // Duplicate item_key "k_a" must be ignored and return 1
+    CHECK(host.register_menu_subgroup_provider("@Ronnoc", "opts", 5, nullptr, nullptr, 0, "k_a", push_provider,
+                                               &p_sg_dup) == 1);
+
+    int closed_count = 0;
+    CHECK(host.register_menu_closed_callback([](void* u) { ++*static_cast<int*>(u); }, &closed_count) == 1);
+
+    void* root_menu = reinterpret_cast<void*>(0x5555);
+    host.on_system_menu(root_menu);
+    CHECK(log.size() == 1 && log[0] == "root");
+    CHECK(env.added.size() == 1 && env.added[0].first == root_menu);
+    PluginMenuItem* group_item = env.added[0].second;
+    CHECK(std::strcmp(MenuHost::handle_text(group_item), "@Ronnoc") == 0);
+    CHECK(host.live_rows() == 1);
+
+    // Step handler on enabled vs disabled row
+    int step_sum = 0;
+    MenuHost::set_step(group_item, [](void*, void*, int dir) -> int { return dir; });
+    CHECK(MenuHost::handle_step(group_item, 1) == 1);
+    group_item->native[0x52] = 0;
+    CHECK(MenuHost::handle_step(group_item, 1) == 0);
+    group_item->native[0x52] = 1;
+    (void)step_sum;
+
+    // Opening @Ronnoc should invoke: early (-10), subgroup "opts" (min sub_order=0), late (20)
+    log.clear();
+    CHECK(MenuHost::handle_confirm(group_item) == FEFW_MENU_OPENED);
+    CHECK(log.size() == 2 && log[0] == "early" && log[1] == "late");
+    CHECK(env.added.size() == 2 && env.added[1].first == env.fake_submenu_a);
+    PluginMenuItem* sg_item = env.added[1].second;
+    CHECK(std::strcmp(MenuHost::handle_text(sg_item), "OptionsTitle") == 0);
+    CHECK(host.live_rows() == 2);
+
+    // Opening subgroup should invoke sg_a (order 1), sg_b (order 5), and skip sg_dup
+    log.clear();
+    CHECK(MenuHost::handle_confirm(sg_item) == FEFW_MENU_OPENED);
+    CHECK(log.size() == 2 && log[0] == "sg_a" && log[1] == "sg_b");
+
+    // Destroying all rows triggers menu_closed exactly once on next flush
+    host.handle_dtor(sg_item, 1);
+    CHECK(host.live_rows() == 1);
+    host.flush_menu_closed();
+    CHECK(closed_count == 0);
+    host.handle_dtor(group_item, 0);
+    CHECK(host.live_rows() == 0);
+    CHECK(env.dtor_calls[0] == 1 && env.dtor_calls[1] == 1);
+    host.flush_menu_closed();
+    CHECK(closed_count == 1);
+    host.flush_menu_closed();
+    CHECK(closed_count == 1);
+
+    for (auto* p : env.allocated) delete p;
+    g_fake_env = nullptr;
+}
+
 int main() {
     test_table_roundtrip();
     test_upsert_appends();
     test_is_table_rejects_garbage();
     test_zstd_roundtrip();
     test_msbt_new_label_keeps_tsy1_parallel();
+    test_settings_store();
+    test_menu_host_groups_and_lifecycle();
     std::printf("%d passed, %d failed\n", g_passed, g_failed);
     return g_failed ? EXIT_FAILURE : EXIT_SUCCESS;
 }

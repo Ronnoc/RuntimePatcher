@@ -56,7 +56,11 @@ typedef struct FefwApi {
     // Base address of the game's main module (.text start). Game offsets in plugins are main-relative.
     uintptr_t main_base;
 
+#if defined(__GNUC__) || defined(__clang__)
     void (*log)(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+#else
+    void (*log)(const char* fmt, ...);
+#endif
 
     // Called while the game builds its System settings menu: append root rows there.
     int (*register_system_menu_provider)(FefwMenuProviderFn fn, void* user);
