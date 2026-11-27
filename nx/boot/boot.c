@@ -63,7 +63,8 @@ static const char* hook_name(u64 idx, char buf[24]) {
     u64 k = idx - FEFW_PLT_HOOK_COUNT;
     char* o = buf;
     for (const char* p = "fefw_mid_"; *p;) *o++ = *p++;
-    if (k >= 10) *o++ = (char)('0' + k / 10);
+    if (k >= 100) *o++ = (char)('0' + k / 100);
+    if (k >= 10) *o++ = (char)('0' + (k / 10) % 10);
     *o++ = (char)('0' + k % 10);
     *o = 0;
     return buf;
