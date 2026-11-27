@@ -895,11 +895,15 @@ void collect_localization_entries(const JsonVal& manifest,
                                   std::map<std::string, std::map<std::string, std::string>>& lang_to_job_msgs,
                                   std::map<std::string, std::map<std::string, std::string>>& lang_to_skill_msgs) {
     // 1. Class localizations -> Job.msbt.zst
+    // Supports per-class "localization" (for multi-class packs) with fallback to top-level manifest "localization".
     const auto* classes = manifest.get("classes");
-    const auto* loc = manifest.get("localization");
-    if (classes && classes->is_arr() && loc && loc->is_obj()) {
+    const auto* top_loc = manifest.get("localization");
+    if (classes && classes->is_arr()) {
         for (const auto& cls : classes->arr_val) {
             if (!cls.is_obj()) continue;
+            const auto* loc = cls.get("localization");
+            if (!loc || !loc->is_obj()) loc = top_loc;
+            if (!loc || !loc->is_obj()) continue;
             std::string name_id = cls.str_or("name_id");
             std::string help_id = cls.str_or("help_id");
             for (const auto& [lang, l_obj] : loc->obj_val) {

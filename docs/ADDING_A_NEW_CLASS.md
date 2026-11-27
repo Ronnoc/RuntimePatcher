@@ -88,7 +88,8 @@ Game addresses come from the game profile (your game files + a hooks file, or a 
      `texture` may be a list of files; the first one present in `resources/` is used. With no texture the donor icon
      is cloned unchanged.
    - `localization` for class name/help: provide all 12 languages (`CNzh TWzh JPja USen EUen USfr EUfr USes
-     EUes EUde EUit KRko`).
+     EUes EUde EUit KRko`). May be placed at the manifest root (shared by all entries in `classes[]`) or
+     inside each `classes[]` object individually (for multi-class packs; falls back to root `localization`).
 3. Look up existing keys by dumping the game tables with `fefw_table_dump` (built by the host CMake project).
 4. Table rules:
    - rows are only ever **appended**; never reuse/rename a vanilla `JID_`.

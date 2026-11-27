@@ -178,14 +178,18 @@ class StringPackage:
         """Packs localizations for all classes and skills across 12 languages."""
         entries = []
 
-        # 1. Class name & help entries
+        # 1. Class name & help entries (per-class localization with fallback to top-level manifest localization)
+        seen_class_labels = set()
         for c in manifest.get("classes", []):
+            loc = c.get("localization") or manifest.get("localization", {})
             name_id = c.get("name_id")
             help_id = c.get("help_id")
-            if name_id:
-                entries.append((name_id, "name", manifest.get("localization", {})))
-            if help_id:
-                entries.append((help_id, "help", manifest.get("localization", {})))
+            if name_id and name_id not in seen_class_labels:
+                entries.append((name_id, "name", loc))
+                seen_class_labels.add(name_id)
+            if help_id and help_id not in seen_class_labels:
+                entries.append((help_id, "help", loc))
+                seen_class_labels.add(help_id)
 
         # 2. Custom Skill name & help entries
         for sk in manifest.get("custom_skills", []):
