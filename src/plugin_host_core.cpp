@@ -53,6 +53,13 @@ void insertion_sort_by_order(T* items, int n) {
     }
 }
 
+bool has_invalid_ini_char(const char* s, bool disallow_eq) {
+    for (const char* p = s; *p; ++p) {
+        if (*p == '\r' || *p == '\n' || (disallow_eq && *p == '=')) return true;
+    }
+    return false;
+}
+
 }  // namespace
 
 // ------------------------------------------------------------------------------------------------
@@ -103,8 +110,8 @@ int SettingsStore::get(const char* key, char* out, size_t out_size) const {
 }
 
 int SettingsStore::set(const char* key, const char* value) {
-    if (!key || !value || !key[0] || std::strlen(key) >= kKeyLen || std::strpbrk(key, "=\r\n") ||
-        std::strpbrk(value, "\r\n")) {
+    if (!key || !value || !key[0] || std::strlen(key) >= kKeyLen || has_invalid_ini_char(key, true) ||
+        has_invalid_ini_char(value, false)) {
         return -1;
     }
     return put(key, std::strlen(key), value, std::strlen(value)) ? 0 : -1;

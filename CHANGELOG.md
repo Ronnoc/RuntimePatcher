@@ -4,6 +4,12 @@ All notable changes to this project are documented here. Versions follow [Semant
 
 ## [Unreleased]
 
+## [0.3.1]
+
+- Fixed Switch runtime linking against saved game profiles (the `v0.3.0` Release CI failure): removed the
+  `std::strpbrk` libc import from `SettingsStore::set` in `src/plugin_host_core.cpp` so builds no longer require
+  `strpbrk` in the game profile's export table.
+
 ## [0.3.0]
 
 - Unified plain-text overlay manifests: packaged mods now ship a single `romfs/GameData/Classes/<id>.json`
