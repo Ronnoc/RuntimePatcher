@@ -144,6 +144,13 @@ typedef struct FefwApi {
     int (*register_menu_subgroup_provider)(const char* group_name, const char* sub_id, int sub_order,
                                            const char* (*title_fn)(void* user, void* item), void* title_user,
                                            int item_order, const char* item_key, FefwMenuProviderFn fn, void* user);
+
+    // (appended to version 3; check `size`) Inter-plugin service registry: lets a plugin expose an opaque pointer
+    // (typically a static function-pointer table) under a short UTF-8 `name` (at most 63 bytes) for other plugins to
+    // look up at runtime without cross-module symbol imports. register_service returns 1 on success (0 on bad name,
+    // NULL ptr, duplicate name, or full table). get_service returns the registered pointer, or NULL if absent.
+    int (*register_service)(const char* name, void* ptr);
+    void* (*get_service)(const char* name);
 } FefwApi;
 
 #define FEFW_SETTINGS_NOT_READY (-2)

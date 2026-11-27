@@ -130,6 +130,7 @@ bool g_on_frame_registered = false;
 bool g_system_menu_hooked = false;
 FefwApi g_fefw_api{};
 fefw_foundation::MenuHost g_menu_host;
+fefw_foundation::ServiceRegistry g_services;
 std::string g_settings_path;
 std::chrono::steady_clock::time_point g_t0;
 
@@ -364,6 +365,8 @@ void* api_menu_add_entry(void* menu, const FefwMenuEntry* entry) { return g_menu
 void* api_menu_open_submenu(void* item) { return g_menu_host.open_submenu(item); }
 void api_menu_refresh(void* item) { g_menu_host.refresh(item); }
 int api_menu_set_step(void* item, FefwMenuStepFn fn) { return fefw_foundation::MenuHost::set_step(item, fn); }
+int api_register_service(const char* name, void* ptr) { return g_services.register_service(name, ptr); }
+void* api_get_service(const char* name) { return g_services.get_service(name); }
 
 // ---- settings: <mods>/fefw_settings.ini via shared SettingsStore ----------------------------------------------------
 void load_settings_file(fefw_foundation::SettingsStore& store) {
@@ -516,6 +519,8 @@ NXMOD_EXPORT const FefwApi* fefw_nxmod_host_attach(const NxModApi* nx_api, const
         g_fefw_api.register_menu_group_provider = &api_register_menu_group_provider;
         g_fefw_api.register_menu_group_provider_ordered = &api_register_menu_group_provider_ordered;
         g_fefw_api.register_menu_subgroup_provider = &api_register_menu_subgroup_provider;
+        g_fefw_api.register_service = &api_register_service;
+        g_fefw_api.get_service = &api_get_service;
 
         g_host_initialized = true;
     }

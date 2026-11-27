@@ -460,6 +460,26 @@ static void test_vfs_overlay_discovery() {
     CHECK(reads["/src_mod/manifest.json"] == 1);
 }
 
+static void test_service_registry() {
+    ServiceRegistry reg;
+    int svc_a = 42;
+    int svc_b = 99;
+    CHECK(reg.count() == 0);
+    CHECK(reg.get_service("alpha") == nullptr);
+    CHECK(reg.register_service(nullptr, &svc_a) == 0);
+    CHECK(reg.register_service("", &svc_a) == 0);
+    CHECK(reg.register_service("alpha", nullptr) == 0);
+    CHECK(reg.register_service("alpha", &svc_a) == 1);
+    CHECK(reg.register_service("alpha", &svc_b) == 0);  // duplicate rejected
+    CHECK(reg.register_service("beta", &svc_b) == 1);
+    CHECK(reg.count() == 2);
+    CHECK(reg.get_service("alpha") == &svc_a);
+    CHECK(reg.get_service("beta") == &svc_b);
+    CHECK(reg.get_service("gamma") == nullptr);
+    std::string too_long(ServiceRegistry::kNameLen, 'x');
+    CHECK(reg.register_service(too_long.c_str(), &svc_a) == 0);
+}
+
 int main() {
     test_table_roundtrip();
     test_upsert_appends();
@@ -469,6 +489,7 @@ int main() {
     test_settings_store();
     test_menu_host_groups_and_lifecycle();
     test_vfs_overlay_discovery();
+    test_service_registry();
     std::printf("%d passed, %d failed\n", g_passed, g_failed);
     return g_failed ? EXIT_FAILURE : EXIT_SUCCESS;
 }

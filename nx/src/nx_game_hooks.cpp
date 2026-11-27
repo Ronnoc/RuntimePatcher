@@ -51,6 +51,7 @@ constexpr uint32_t kSigMenuResumeInsn = FEFW_GAME_MENU_RESUME_INSN;
 
 uintptr_t g_main = 0;
 fefw_foundation::MenuHost g_menu_host;
+fefw_foundation::ServiceRegistry g_services;
 
 volatile int g_reg_lock = 0;
 void lock(volatile int* l) {
@@ -170,6 +171,8 @@ void* menu_add_entry(void* menu, const FefwMenuEntry* entry) { return g_menu_hos
 void* menu_open_submenu(void* item) { return g_menu_host.open_submenu(item); }
 void menu_refresh(void* item) { g_menu_host.refresh(item); }
 int menu_set_step(void* item, FefwMenuStepFn fn) { return fefw_foundation::MenuHost::set_step(item, fn); }
+int api_register_service(const char* name, void* ptr) { return g_services.register_service(name, ptr); }
+void* api_get_service(const char* name) { return g_services.get_service(name); }
 
 // ------------------------------------------------------------------------------------------------
 // Mid-function hooks & frame callbacks
@@ -366,7 +369,10 @@ void fefw_nx::load_plugins(const char* mount, PluginReadFn read_file, PluginList
     g_api.menu_set_step = &menu_set_step;
     g_api.register_menu_group_provider = &register_menu_group_provider;
     g_api.register_menu_group_provider_ordered = &register_menu_group_provider_ordered;
+    g_services.set_lock(&reg_lock, &reg_unlock);
     g_api.register_menu_subgroup_provider = &register_menu_subgroup_provider;
+    g_api.register_service = &api_register_service;
+    g_api.get_service = &api_get_service;
 
 #if FEFW_NX_NRO
     auto ro_init = static_cast<Result (*)()>(nullptr);

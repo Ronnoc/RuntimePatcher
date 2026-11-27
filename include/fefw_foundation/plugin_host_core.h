@@ -210,5 +210,34 @@ private:
     uint64_t orig_dtor_[2] = {0, 0};
 };
 
+// ------------------------------------------------------------------------------------------------
+// ServiceRegistry: inter-plugin named pointer registry shared by Switch & PC hosts.
+// ------------------------------------------------------------------------------------------------
+class ServiceRegistry {
+public:
+    static constexpr int kMaxServices = 32;
+    static constexpr int kNameLen = 64;
+
+    void set_lock(void (*lock_fn)(), void (*unlock_fn)()) {
+        lock_fn_ = lock_fn;
+        unlock_fn_ = unlock_fn;
+    }
+
+    int register_service(const char* name, void* ptr);
+    void* get_service(const char* name) const;
+    int count() const;
+
+private:
+    struct Entry {
+        char name[kNameLen];
+        void* ptr;
+    };
+
+    Entry entries_[kMaxServices]{};
+    volatile int count_ = 0;
+    void (*lock_fn_)() = nullptr;
+    void (*unlock_fn_)() = nullptr;
+};
+
 }  // namespace fefw_foundation
 #endif

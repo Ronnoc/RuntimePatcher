@@ -506,4 +506,42 @@ int MenuHost::live_rows() const { return atomic_load_acq(&live_rows_); }
 
 bool MenuHost::has_menu_closed_callbacks() const { return atomic_load_acq(&menu_closed_count_) > 0; }
 
+// ------------------------------------------------------------------------------------------------
+// ServiceRegistry
+// ------------------------------------------------------------------------------------------------
+int ServiceRegistry::register_service(const char* name, void* ptr) {
+    if (!name || !name[0] || !ptr) return 0;
+    size_t nlen = std::strlen(name);
+    if (nlen == 0 || nlen >= static_cast<size_t>(kNameLen)) return 0;
+    if (lock_fn_) lock_fn_();
+    int n = atomic_load_acq(&count_);
+    for (int i = 0; i < n; ++i) {
+        if (std::strcmp(entries_[i].name, name) == 0) {
+            if (unlock_fn_) unlock_fn_();
+            return 0;
+        }
+    }
+    if (n >= kMaxServices) {
+        if (unlock_fn_) unlock_fn_();
+        return 0;
+    }
+    std::memcpy(entries_[n].name, name, nlen + 1);
+    entries_[n].ptr = ptr;
+    atomic_store_rel(&count_, n + 1);
+    if (unlock_fn_) unlock_fn_();
+    return 1;
+}
+
+void* ServiceRegistry::get_service(const char* name) const {
+    if (!name || !name[0]) return nullptr;
+    int n = atomic_load_acq(&count_);
+    if (n > kMaxServices) n = kMaxServices;
+    for (int i = 0; i < n; ++i) {
+        if (std::strcmp(entries_[i].name, name) == 0) return entries_[i].ptr;
+    }
+    return nullptr;
+}
+
+int ServiceRegistry::count() const { return atomic_load_acq(&count_); }
+
 }  // namespace fefw_foundation
