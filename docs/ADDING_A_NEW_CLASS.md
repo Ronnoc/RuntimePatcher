@@ -3,7 +3,8 @@
 Tested on Eden. The "Pitfalls" section lists failures seen during development.
 
 > **Never** ship or generate a merged `Job.bin` / `Skill.bin` / `AssetTable.bin`. Class mods contain only
-> `romfs/GameData/Classes/<id>.delta|.str|.bntx`; the `subsdk9` foundation module synthesizes the
+> `romfs/GameData/Classes/<id>.json` (plain-text JSON shared by PC and emulator; legacy `.delta` is still
+> accepted at runtime); the `subsdk9` foundation module synthesizes the
 > patched tables in memory at runtime, on top of whatever base (or third-party) `Job.bin` is loaded.
 
 ---
@@ -70,7 +71,7 @@ Game addresses come from the game profile (your game files + a hooks file, or a 
      README.md          <- design notes for humans
    ```
 2. Edit `manifest.json`:
-   - `id` (lowercase, unique; becomes package `FEFW_<Id>_Mod` and file names `<id>.delta` …), `enabled: true`.
+   - `id` (lowercase, unique; becomes package `FEFW_<Id>_Mod` and `romfs/GameData/Classes/<id>.json`), `enabled: true`.
    - `classes[]` — one entry per class row (a mounted class needs its dismounted row too):
      - `key` new `JID_…` (unique), `clone_base` existing `JID_…` row to clone, `name_id`/`help_id` (`MJID_…`).
      - `rank`, `system` (weapon line), `gender`, `movement_type`, `mount_rid`, `dismount_target`.

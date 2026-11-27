@@ -64,9 +64,9 @@ struct HostFs {
 // HostFs implementation backed by std::filesystem (PC builds).
 HostFs make_std_host_fs();
 
-// Scans `overlay_dirs` (or discovered `/GameData/Classes/*.delta` inside the virtual tree) for modular
-// FEFW RuntimePatcher mods (`manifest.json` or `.delta`), merges their patches onto the base RomFS files
-// via `read_base_file`, and outputs the synthesized in-memory files into `out_result`.
+// Scans `overlay_dirs` (or discovered `/GameData/Classes/*.json` inside the virtual tree) for modular
+// FEFW RuntimePatcher mods (`<id>.json`, `manifest.json`, or legacy `.delta`), merges their patches onto
+// the base RomFS files via `read_base_file`, and outputs the synthesized in-memory files into `out_result`.
 bool apply_vfs_overlays(const std::vector<std::string>& overlay_dirs,
                         const ReadVirtualFileFn& read_base_file,
                         VfsOverlayResult& out_result,

@@ -950,8 +950,8 @@ struct DiscoveredMod {
 
 // Texture/icon data files ("data", "icon_texture", ...) named by a manifest. Looked up in order:
 //   1. "resources_dir" in the manifest (relative to the manifest's folder), when given
-//   2. <mod root>/resources                      (source layout; .delta packages: <Classes>/resources)
-//   3. <mod root>/romfs/GameData/Classes/resources (release packages read through their root manifest.json)
+//   2. <mod root>/resources                      (source layout; packaged mods: <Classes>/resources)
+//   3. <mod root>/romfs/GameData/Classes/resources (packages read through a root manifest.json)
 bool read_mod_res(const DiscoveredMod& m, const std::string& file_name, std::vector<uint8_t>& out) {
     std::vector<std::string> dirs;
     const std::string custom = m.manifest.str_or("resources_dir");
@@ -964,12 +964,76 @@ bool read_mod_res(const DiscoveredMod& m, const std::string& file_name, std::vec
     return false;
 }
 
+void try_register_manifest_json(const std::string& json_str,
+                                const std::string& mod_root,
+                                std::vector<DiscoveredMod>& out_mods,
+                                std::set<std::string>& seen_ids) {
+    JsonVal jv;
+    if (JsonParser(json_str).parse(jv) && jv.is_obj()) {
+        std::string id = jv.str_or("id");
+        if (!id.empty() && jv.bool_or("enabled", true) && seen_ids.insert(id).second) {
+            out_mods.push_back({id, mod_root, std::move(jv)});
+        }
+    }
+}
+
 void discover_mods_in_overlay(const std::string& ov_dir,
                               std::vector<DiscoveredMod>& out_mods,
                               std::set<std::string>& seen_ids) {
-    // Check 1: manifest.json in ov_dir or its parent/grandparent (e.g. <pkg>/romfs -> <pkg>/manifest.json)
+    // Check 1 (preferred, unified PC + Switch): GameData/Classes/*.json (plus legacy *.delta fallback).
+    // Checking this first ensures both platforms read the exact same file and avoids double-parsing a
+    // stale root manifest.json alongside romfs/GameData/Classes/<id>.json.
+    std::string classes_sub = path_join(path_join(ov_dir, "GameData"), "Classes");
+    std::vector<HostDirEntry> entries;
+    bool classes_has_manifests = false;
+    if (g_host_fs->list_dir && g_host_fs->list_dir(classes_sub, entries)) {
+        std::sort(entries.begin(), entries.end(),
+                  [](const HostDirEntry& a, const HostDirEntry& b) { return a.name < b.name; });
+        std::set<std::string> json_stems;
+        for (const auto& entry : entries) {
+            if (!entry.is_dir && path_has_ext(entry.name, ".json")) {
+                classes_has_manifests = true;
+                json_stems.insert(entry.name.substr(0, entry.name.size() - 5));
+                std::vector<uint8_t> raw;
+                if (read_host_file(path_join(classes_sub, entry.name), raw)) {
+                    std::string s(reinterpret_cast<const char*>(raw.data()), raw.size());
+                    try_register_manifest_json(s, classes_sub, out_mods, seen_ids);
+                }
+            }
+        }
+        // Legacy *.delta fallback (only when no matching <stem>.json exists)
+        for (const auto& entry : entries) {
+            if (!entry.is_dir && path_has_ext(entry.name, ".delta")) {
+                classes_has_manifests = true;
+                std::string stem = entry.name.substr(0, entry.name.size() - 6);
+                if (json_stems.count(stem) != 0) continue;
+                std::vector<uint8_t> delta_raw;
+                std::string json_str;
+                if (read_host_file(path_join(classes_sub, entry.name), delta_raw) &&
+                    unpack_delta_json(delta_raw, json_str)) {
+                    try_register_manifest_json(json_str, classes_sub, out_mods, seen_ids);
+                }
+            }
+        }
+    }
+
+    // Check 2: Mods/<mod_id>/manifest.json inside ov_dir
     std::vector<std::string> candidate_manifests;
-    {
+    std::string mods_sub = path_join(ov_dir, "Mods");
+    entries.clear();
+    if (g_host_fs->list_dir && g_host_fs->list_dir(mods_sub, entries)) {
+        std::sort(entries.begin(), entries.end(),
+                  [](const HostDirEntry& a, const HostDirEntry& b) { return a.name < b.name; });
+        for (const auto& entry : entries) {
+            if (entry.is_dir) {
+                candidate_manifests.push_back(path_join(path_join(mods_sub, entry.name), "manifest.json"));
+            }
+        }
+    }
+
+    // Check 3: manifest.json in ov_dir or its parent/grandparent (source-tree / legacy package layout).
+    // Skipped when GameData/Classes already supplied manifests so PC never parses the same mod twice.
+    if (!classes_has_manifests) {
         std::string dir = ov_dir;
         for (int depth = 0; depth < 4 && !dir.empty(); ++depth) {
             candidate_manifests.push_back(path_join(dir, "manifest.json"));
@@ -979,51 +1043,11 @@ void discover_mods_in_overlay(const std::string& ov_dir,
         }
     }
 
-    // Check 2: Mods/<mod_id>/manifest.json inside ov_dir
-    std::string mods_sub = path_join(ov_dir, "Mods");
-    std::vector<HostDirEntry> entries;
-    if (g_host_fs->list_dir && g_host_fs->list_dir(mods_sub, entries)) {
-        for (const auto& entry : entries) {
-            if (entry.is_dir) {
-                candidate_manifests.push_back(path_join(path_join(mods_sub, entry.name), "manifest.json"));
-            }
-        }
-    }
-
     for (const auto& mp : candidate_manifests) {
         std::vector<uint8_t> raw;
         if (read_host_file(mp, raw)) {
             std::string s(reinterpret_cast<const char*>(raw.data()), raw.size());
-            JsonVal jv;
-            if (JsonParser(s).parse(jv) && jv.is_obj()) {
-                std::string id = jv.str_or("id");
-                if (!id.empty() && jv.bool_or("enabled", true) && seen_ids.insert(id).second) {
-                    out_mods.push_back({id, path_parent(mp), std::move(jv)});
-                }
-            }
-        }
-    }
-
-    // Check 3: GameData/Classes/*.delta inside ov_dir
-    std::string classes_sub = path_join(path_join(ov_dir, "GameData"), "Classes");
-    entries.clear();
-    if (g_host_fs->list_dir && g_host_fs->list_dir(classes_sub, entries)) {
-        std::sort(entries.begin(), entries.end(),
-                  [](const HostDirEntry& a, const HostDirEntry& b) { return a.name < b.name; });
-        for (const auto& entry : entries) {
-            if (!entry.is_dir && path_has_ext(entry.name, ".delta")) {
-                std::vector<uint8_t> delta_raw;
-                std::string json_str;
-                if (read_host_file(path_join(classes_sub, entry.name), delta_raw) && unpack_delta_json(delta_raw, json_str)) {
-                    JsonVal jv;
-                    if (JsonParser(json_str).parse(jv) && jv.is_obj()) {
-                        std::string id = jv.str_or("id");
-                        if (!id.empty() && jv.bool_or("enabled", true) && seen_ids.insert(id).second) {
-                            out_mods.push_back({id, classes_sub, std::move(jv)});
-                        }
-                    }
-                }
-            }
+            try_register_manifest_json(s, path_parent(mp), out_mods, seen_ids);
         }
     }
 }

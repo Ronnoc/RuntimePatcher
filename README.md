@@ -20,7 +20,8 @@ Each release is built for one game version (noted in the release); other version
 ## Features
 
 - **Multiple mods side by side, no merging.** Each mod ships a `manifest.json`, packaged as
-  `romfs/GameData/Classes/<mod_id>.delta|.str|.bntx`. At runtime `Job.bin`, `Skill.bin`, `AssetTable.bin`,
+  `romfs/GameData/Classes/<mod_id>.json` (plain-text JSON shared by PC and emulator; legacy `.delta` is still
+  supported). At runtime `Job.bin`, `Skill.bin`, `AssetTable.bin`,
   `Msg/<lang>/*.msbt.zst` and `Layout/Textures/Icon_*.arc.zst` are read from the active RomFS (including any
   other mod's replacement files), patched and served from memory.
 - **Vanilla data stays intact.** New table rows are appended; existing rows and indices are never moved.
@@ -83,7 +84,7 @@ cmake -S . -B build/host && cmake --build build/host --config Release   # -> bui
 ```
 
 Install it as `<mods>/FEFW_RuntimePatcher/exefs/fefw_runtime_patcher.dll` and put the class mods beside it as usual
-(`<mods>/<mod>/romfs/GameData/Classes/<id>.delta`, or `manifest.json` next to `romfs/`). At load it scans every
+(`<mods>/<mod>/romfs/GameData/Classes/<id>.json`, or legacy `.delta` / `manifest.json`). At load it scans every
 installed mod's `romfs/` and registers a file edit for each file the mods patch; the runtime hands over each file as
 it stands (the game's or another RomFS mod's) and serves the patched bytes. No game profile is needed.
 Native plugins (`romfs/fefw/plugins/*.nro`) are Switch code and are not loaded on PC.
@@ -99,7 +100,6 @@ nx/boot/                   NRO bootstrap placed in main: PLT redirect stubs + nn
 nx/probe/                  minimal NRO used by the `probe` target
 mods/<id>/                 your mods (not included): manifest.json, resources/, optional plugin src/
 tools/build_emulator_mod.py  cross-compile the runtime, package mods, deploy
-tools/fefw_delta.py        .delta / .str / .bntx package writer (format read by src/vfs_overlay.cpp)
 tools/nso_tool.py          NSO/NRO utility: elf2nso, elf2nro, mknrr (Switch 2 NRR), dynamic symbol dump
 tools/nro_bootstrap.py     builds the main bootstrap IPS (PLT/GOT analysis, nx/boot link, IPS32)
 tools/fetch_third_party.py fetches pinned musl / libc++ headers into third_party/

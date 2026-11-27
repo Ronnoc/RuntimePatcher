@@ -596,9 +596,25 @@ def build_plugin(m, pkg):
                                           format=1))
 
 
-def build_mods():
-    from fefw_delta import export_decoupled_mod_package  # .delta / .str / .bntx exporter (tools/)
+def _write_overlay_manifest(m, classes_dir):
+    """Write a single plain-text JSON manifest into romfs/GameData/Classes/<id>.json.
 
+    Both PC and Switch/emulator read this exact file, so players can edit class stats on either platform
+    and startup never parses a duplicate root manifest.json. Large machine-generated data-only manifests
+    (> 256 KiB without `classes`) are written compactly to reduce disk size and startup parse time.
+    """
+    clean = {k: v for k, v in m.items() if not k.startswith("_")}
+    pretty = json.dumps(clean, ensure_ascii=False, indent=2)
+    if not clean.get("classes") and len(pretty.encode("utf-8")) > 256 * 1024:
+        text = json.dumps(clean, ensure_ascii=False, separators=(",", ":"))
+    else:
+        text = pretty + "\n"
+    out_path = os.path.join(classes_dir, f"{m['id']}.json")
+    with open(out_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
+
+def build_mods():
     built = []
     for m in discover_mods():
         pkg_name = package_name(m["id"])
@@ -607,11 +623,10 @@ def build_mods():
             shutil.rmtree(pkg)
         os.makedirs(pkg, exist_ok=True)
         classes_dir = os.path.join(pkg, "romfs", "GameData", "Classes")
-        # The runtime discovers mod manifests through GameData/Classes/*.delta, so data-only mods
-        # (table_patches / msbt_patches, e.g. new characters) need the .delta too.
+        # Both PC and Switch discover mod manifests through romfs/GameData/Classes/<id>.json.
         if m.get("classes") or m.get("table_patches") or m.get("msbt_patches") or m.get("bntx_patches"):
             os.makedirs(classes_dir, exist_ok=True)
-            export_decoupled_mod_package(m, classes_dir)
+            _write_overlay_manifest(m, classes_dir)
         if m.get("plugin"):
             build_plugin(m, pkg)
         # Plain romfs files shipped by the mod (new models, ...): mods/<id>/romfs/** -> <pkg>/romfs/**
@@ -624,7 +639,6 @@ def build_mods():
                 if fn.endswith(".swizzled"):
                     os.makedirs(os.path.join(classes_dir, "resources"), exist_ok=True)
                     shutil.copy2(os.path.join(res_src, fn), os.path.join(classes_dir, "resources", fn))
-        shutil.copy2(os.path.join(m["_mod_dir"], "manifest.json"), os.path.join(pkg, "manifest.json"))
         files = sorted(os.path.relpath(p, pkg) for p in glob.glob(os.path.join(pkg, "**", "*"), recursive=True)
                        if os.path.isfile(p))
         print(f"[+] {pkg_name}: {len(files)} file(s), romfs only (requires {FOUNDATION_PKG})")

@@ -9,6 +9,7 @@
 #include "fefw_foundation/game_table.h"
 #include "fefw_foundation/msbt_patcher.h"
 #include "fefw_foundation/plugin_host_core.h"
+#include "fefw_foundation/vfs_overlay.h"
 
 using namespace fefw_foundation;
 
@@ -395,6 +396,70 @@ static void test_menu_host_groups_and_lifecycle() {
     g_fake_env = nullptr;
 }
 
+static std::vector<uint8_t> make_fake_delta(const std::string& json_str) {
+    std::vector<uint8_t> buf(64, 0);
+    std::memcpy(buf.data(), "FWDL", 4);
+    uint32_t j_off = 64;
+    uint32_t j_sz = static_cast<uint32_t>(json_str.size());
+    std::memcpy(buf.data() + 16, &j_off, 4);
+    std::memcpy(buf.data() + 20, &j_sz, 4);
+    buf.insert(buf.end(), json_str.begin(), json_str.end());
+    return buf;
+}
+
+static void test_vfs_overlay_discovery() {
+    // 1. Unified plain-text GameData/Classes/<id>.json wins over stale <id>.delta and parent manifest.json
+    //    without reading either redundant file (prevents double JSON parsing on PC).
+    std::map<std::string, std::vector<uint8_t>> files;
+    std::map<std::string, std::vector<HostDirEntry>> dirs;
+    std::map<std::string, int> reads;
+
+    const std::string alpha_json = R"({"id":"alpha","enabled":true,"table_patches":{"/GameData/Job.bin":[]}})";
+    const std::string legacy_json = R"({"id":"legacy","enabled":true,"table_patches":{"/GameData/Skill.bin":[]}})";
+    const std::string src_json = R"({"id":"src_only","enabled":true,"table_patches":{"/GameData/Item.bin":[]}})";
+
+    files["/pkg/romfs/GameData/Classes/alpha.json"].assign(alpha_json.begin(), alpha_json.end());
+    files["/pkg/romfs/GameData/Classes/alpha.delta"] = make_fake_delta(alpha_json);
+    files["/pkg/romfs/GameData/Classes/legacy.delta"] = make_fake_delta(legacy_json);
+    files["/pkg/manifest.json"].assign(alpha_json.begin(), alpha_json.end());
+    files["/src_mod/manifest.json"].assign(src_json.begin(), src_json.end());
+
+    dirs["/pkg/romfs/GameData/Classes"] = {
+        {"alpha.json", false},
+        {"alpha.delta", false},
+        {"legacy.delta", false},
+    };
+
+    HostFs fs;
+    fs.read_file = [&](const std::string& p, std::vector<uint8_t>& out) {
+        auto it = files.find(p);
+        if (it == files.end()) return false;
+        ++reads[p];
+        out = it->second;
+        return true;
+    };
+    fs.list_dir = [&](const std::string& d, std::vector<HostDirEntry>& out) {
+        auto it = dirs.find(d);
+        if (it == dirs.end()) return false;
+        out = it->second;
+        return true;
+    };
+
+    VfsOverlayPlan plan;
+    std::string err;
+    CHECK(plan_vfs_overlays({"/pkg/romfs", "/src_mod"}, fs, plan, &err));
+    CHECK(plan.applied_mods.size() == 3);
+    CHECK(plan.targets("/GameData/Job.bin"));
+    CHECK(plan.targets("/GameData/Skill.bin"));
+    CHECK(plan.targets("/GameData/Item.bin"));
+    // Crucially: neither stale alpha.delta nor parent /pkg/manifest.json was read.
+    CHECK(reads["/pkg/romfs/GameData/Classes/alpha.json"] == 1);
+    CHECK(reads["/pkg/romfs/GameData/Classes/alpha.delta"] == 0);
+    CHECK(reads["/pkg/manifest.json"] == 0);
+    CHECK(reads["/pkg/romfs/GameData/Classes/legacy.delta"] == 1);
+    CHECK(reads["/src_mod/manifest.json"] == 1);
+}
+
 int main() {
     test_table_roundtrip();
     test_upsert_appends();
@@ -403,6 +468,7 @@ int main() {
     test_msbt_new_label_keeps_tsy1_parallel();
     test_settings_store();
     test_menu_host_groups_and_lifecycle();
+    test_vfs_overlay_discovery();
     std::printf("%d passed, %d failed\n", g_passed, g_failed);
     return g_failed ? EXIT_FAILURE : EXIT_SUCCESS;
 }
