@@ -4,6 +4,26 @@ All notable changes to this project are documented here. Versions follow [Semant
 
 ## [Unreleased]
 
+## [0.3.0]
+
+- Unified plain-text overlay manifests: packaged mods now ship a single `romfs/GameData/Classes/<id>.json`
+  shared by PC and Switch/emulator (large data-only manifests > 256 KiB without `classes` are emitted compactly).
+  `discover_mods_in_overlay` checks `GameData/Classes/*.json` first and skips redundant parent `manifest.json`
+  lookups, eliminating duplicate JSON parsing on PC while keeping legacy `*.delta` and source `manifest.json`
+  compatibility. Deprecated `tools/fefw_delta.py` removed.
+- Shared plugin host core (`MenuHost` and `SettingsStore`) extracted into `fefw_class_foundation`, and
+  `fefw_runtime_patcher.dll` now exports the singleton PC `FefwApi` host (`fefw_nxmod_host_attach`) so code-plugin
+  DLLs share one menu/settings/hook host without duplicating it.
+- Per-class `localization` blocks are now supported inside `classes[]` entries for multi-class manifests (falling back
+  to the root `localization` table).
+- Switch runtime performance & capacity:
+  - Raised `MAX_MID_HOOKS` from 64 to 128 (`fefw_mid_0` .. `fefw_mid_127`).
+  - Cached resolved NRO hook targets in `subsdk9` and added a lock-free `nn::fs` fast path.
+  - Added readable memory region caching, zero-alloc `OpenFile` target filtering, and an LRU cache for synthesized files.
+- Shared System menu groups and nested subgroups: `register_menu_group_provider(group_name, fn, user)`,
+  `register_menu_group_provider_ordered(group_name, order, fn, user)`, and `register_menu_subgroup_provider(...)`
+  (appended to plugin API version 3) merge providers from separate plugins under one top-level System settings submenu
+  and shared nested submenus in ascending `order`.
 - New table op `APPEND_MATRIX_ROW`: appends a row to a square "row x row" sheet (one array entry per row, in row
   order) and pads every existing row's array with its pair value (`pair`: `default` + per-key values), so several
   mods can each add a row.
@@ -11,10 +31,6 @@ All notable changes to this project are documented here. Versions follow [Semant
   that legitimately repeat column 0, e.g. `[]`).
 - `APPEND_ROW` takes `"clone_from_where": {"column": N, "equals": "..."}`: the template is the first row whose
   string column equals the value, and the new row goes right after it (keeps sectioned sheets such as Variable in order).
-- Shared System menu groups: `register_menu_group_provider(group_name, fn, user)` and
-  `register_menu_group_provider_ordered(group_name, order, fn, user)` (appended to plugin API version 3)
-  merge providers from separate plugins that share a `group_name` under one top-level System settings submenu,
-  invoked in ascending `order` (default `0`, ties keep registration order).
 
 ## [0.2.0]
 
