@@ -204,14 +204,29 @@ const char* MenuHost::subgroup_menu_text(void* user, void* item) {
 
 int MenuHost::subgroup_menu_confirm(void* user, void* item) {
     auto* sg = static_cast<MenuSubgroup*>(user);
-    void* sub = sg->host->open_submenu(item);
+    MenuHost* self = sg->host;
+    int si = static_cast<int>(sg - self->menu_subgroups_);
+    void* sub = self->open_submenu(item);
     if (!sub) return FEFW_MENU_IGNORED;
     int n = atomic_load_acq(&sg->count);
     if (n > kMaxCallbacks) n = kMaxCallbacks;
-    GroupProvider sorted[kMaxCallbacks];
-    for (int i = 0; i < n; ++i) sorted[i] = sg->providers[i];
-    insertion_sort_by_order(sorted, n);
-    for (int i = 0; i < n; ++i) sorted[i].fn(sorted[i].user, sub);
+    GroupProvider sorted[kMaxCallbacks + kMaxMenuSubgroups];
+    int total = 0;
+    for (int i = 0; i < n; ++i) sorted[total++] = sg->providers[i];
+    int sn = atomic_load_acq(&self->menu_subgroup_count_);
+    if (sn > kMaxMenuSubgroups) sn = kMaxMenuSubgroups;
+    for (int i = 0; i < sn; ++i) {
+        if (self->menu_subgroups_[i].group_idx == sg->group_idx &&
+            self->menu_subgroups_[i].parent_sub_idx == si) {
+            GroupProvider p{};
+            p.fn = &provide_subgroup_entry;
+            p.user = &self->menu_subgroups_[i];
+            p.order = self->menu_subgroups_[i].order;
+            sorted[total++] = p;
+        }
+    }
+    insertion_sort_by_order(sorted, total);
+    for (int i = 0; i < total; ++i) sorted[i].fn(sorted[i].user, sub);
     return FEFW_MENU_OPENED;
 }
 
@@ -236,7 +251,7 @@ int MenuHost::group_menu_confirm(void* user, void* item) {
     int sn = atomic_load_acq(&self->menu_subgroup_count_);
     if (sn > kMaxMenuSubgroups) sn = kMaxMenuSubgroups;
     for (int i = 0; i < sn; ++i) {
-        if (self->menu_subgroups_[i].group_idx == gi) {
+        if (self->menu_subgroups_[i].group_idx == gi && self->menu_subgroups_[i].parent_sub_idx == -1) {
             GroupProvider p{};
             p.fn = &provide_subgroup_entry;
             p.user = &self->menu_subgroups_[i];
@@ -308,10 +323,21 @@ int MenuHost::register_menu_subgroup_provider(const char* group_name, const char
                                               const char* (*title_fn)(void* user, void* item), void* title_user,
                                               int item_order, const char* item_key, FefwMenuProviderFn fn, void* user) {
     if (!group_name || !group_name[0] || std::strlen(group_name) >= kKeyLen || !sub_id || !sub_id[0] ||
-        std::strlen(sub_id) >= kKeyLen || !fn) {
+        std::strlen(sub_id) >= kKeyLen) {
         return 0;
     }
     if (item_key && std::strlen(item_key) >= kKeyLen) return 0;
+    // Validate `/`-separated segments (no empty segments).
+    {
+        const char* p = sub_id;
+        while (true) {
+            const char* slash = std::strchr(p, '/');
+            size_t len = slash ? static_cast<size_t>(slash - p) : std::strlen(p);
+            if (len == 0 || len >= kKeyLen) return 0;
+            if (!slash) break;
+            p = slash + 1;
+        }
+    }
     lock();
     int gi = -1;
     int gn = menu_group_count_;
@@ -334,39 +360,65 @@ int MenuHost::register_menu_subgroup_provider(const char* group_name, const char
         atomic_store_rel(&g.count, 0);
         atomic_store_rel(&menu_group_count_, gn + 1);
     }
+
+    int parent_si = -1;
     int si = -1;
-    int sn = menu_subgroup_count_;
-    for (int i = 0; i < sn; ++i) {
-        if (menu_subgroups_[i].group_idx == gi && std::strcmp(menu_subgroups_[i].id, sub_id) == 0) {
-            si = i;
+    const char* p = sub_id;
+    while (true) {
+        const char* slash = std::strchr(p, '/');
+        size_t len = slash ? static_cast<size_t>(slash - p) : std::strlen(p);
+        char seg[kKeyLen];
+        std::memcpy(seg, p, len);
+        seg[len] = '\0';
+
+        int found = -1;
+        int sn = menu_subgroup_count_;
+        for (int i = 0; i < sn; ++i) {
+            if (menu_subgroups_[i].group_idx == gi && menu_subgroups_[i].parent_sub_idx == parent_si &&
+                std::strcmp(menu_subgroups_[i].id, seg) == 0) {
+                found = i;
+                break;
+            }
+        }
+        if (found < 0) {
+            if (sn >= kMaxMenuSubgroups) {
+                unlock();
+                return 0;
+            }
+            found = sn;
+            MenuSubgroup& sg = menu_subgroups_[found];
+            sg.host = this;
+            std::snprintf(sg.id, sizeof(sg.id), "%s", seg);
+            sg.group_idx = gi;
+            sg.parent_sub_idx = parent_si;
+            sg.order = 0x7FFFFFFF;
+            sg.has_order = false;
+            sg.title_fn = nullptr;
+            sg.title_user = nullptr;
+            sg.entry = {&subgroup_menu_text, &subgroup_menu_confirm, &sg};
+            atomic_store_rel(&sg.count, 0);
+            atomic_store_rel(&menu_subgroup_count_, sn + 1);
+        }
+        if (!slash) {
+            si = found;
             break;
         }
+        parent_si = found;
+        p = slash + 1;
     }
-    int ok = 0;
-    if (si < 0) {
-        if (sn < kMaxMenuSubgroups) {
-            si = sn;
-            MenuSubgroup& sg = menu_subgroups_[si];
-            sg.host = this;
-            std::snprintf(sg.id, sizeof(sg.id), "%s", sub_id);
-            sg.group_idx = gi;
-            sg.order = sub_order;
-            sg.title_fn = title_fn;
-            sg.title_user = title_user;
-            sg.entry = {&subgroup_menu_text, &subgroup_menu_confirm, &sg};
-            sg.providers[0] = {fn, user, item_order, ""};
-            if (item_key && item_key[0]) std::snprintf(sg.providers[0].item_key, sizeof(sg.providers[0].item_key), "%s", item_key);
-            atomic_store_rel(&sg.count, 1);
-            atomic_store_rel(&menu_subgroup_count_, sn + 1);
-            ok = 1;
-        }
-    } else {
-        MenuSubgroup& sg = menu_subgroups_[si];
-        if (sub_order < sg.order) sg.order = sub_order;
-        if (!sg.title_fn && title_fn) {
-            sg.title_fn = title_fn;
-            sg.title_user = title_user;
-        }
+
+    MenuSubgroup& sg = menu_subgroups_[si];
+    if (!sg.has_order || sub_order < sg.order) {
+        sg.order = sub_order;
+        sg.has_order = true;
+    }
+    if (!sg.title_fn && title_fn) {
+        sg.title_fn = title_fn;
+        sg.title_user = title_user;
+    }
+
+    int ok = 1;
+    if (fn) {
         int c = sg.count;
         if (item_key && item_key[0]) {
             for (int i = 0; i < c; ++i) {
@@ -377,11 +429,13 @@ int MenuHost::register_menu_subgroup_provider(const char* group_name, const char
             }
         }
         if (c < kMaxCallbacks) {
-            GroupProvider& p = sg.providers[c];
-            p = {fn, user, item_order, ""};
-            if (item_key && item_key[0]) std::snprintf(p.item_key, sizeof(p.item_key), "%s", item_key);
+            GroupProvider& pr = sg.providers[c];
+            pr = {fn, user, item_order, ""};
+            if (item_key && item_key[0]) std::snprintf(pr.item_key, sizeof(pr.item_key), "%s", item_key);
             atomic_store_rel(&sg.count, c + 1);
             ok = 1;
+        } else {
+            ok = 0;
         }
     }
     unlock();

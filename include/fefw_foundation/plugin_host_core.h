@@ -111,7 +111,7 @@ class MenuHost {
 public:
     static constexpr int kMaxCallbacks = 32;
     static constexpr int kMaxMenuGroups = 8;
-    static constexpr int kMaxMenuSubgroups = 8;
+    static constexpr int kMaxMenuSubgroups = 16;
     static constexpr int kKeyLen = 64;
 
     bool init(const FefwMenuConfig& cfg, const MenuPlatform& plat);
@@ -161,7 +161,9 @@ private:
         MenuHost* host;
         char id[kKeyLen];
         int group_idx;
+        int parent_sub_idx;
         int order;
+        bool has_order;
         const char* (*title_fn)(void* user, void* item);
         void* title_user;
         GroupProvider providers[kMaxCallbacks];

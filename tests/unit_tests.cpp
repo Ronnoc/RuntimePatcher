@@ -396,6 +396,105 @@ static void test_menu_host_groups_and_lifecycle() {
     g_fake_env = nullptr;
 }
 
+static void test_menu_host_nested_subgroups() {
+    FakeGameEnv env;
+    g_fake_env = &env;
+    env.fake_heap = reinterpret_cast<void*>(0x1234);
+    env.fake_heap_ptr = &env.fake_heap;
+    uintptr_t base = reinterpret_cast<uintptr_t>(env.mem);
+    *reinterpret_cast<void**>(env.mem + 0x200) = env.fake_heap_ptr;
+    uint64_t* fake_vt_prefix = reinterpret_cast<uint64_t*>(env.mem + 0x300);
+    fake_vt_prefix[2] = 0xDEAD0001ull;
+    fake_vt_prefix[3] = 0xDEAD0002ull;
+
+    FefwMenuConfig cfg{};
+    cfg.ui_heap_got = 0x200;
+    cfg.ui_alloc = 0x100;
+    cfg.ui_add_item = 0x110;
+    cfg.ui_submenu = 0x120;
+    cfg.ui_refresh = 0x130;
+    cfg.ui_item_vtable = 0x300;
+    cfg.ui_item_vtable_bytes = 0x248;
+    cfg.vt_text = 0x10;
+    cfg.vt_confirm = 0xC8;
+    cfg.vt_right = 0x138;
+    cfg.vt_left = 0x140;
+
+    MenuPlatform plat{};
+    plat.main_base = base;
+    plat.call_game = &fake_call_game;
+    plat.slot_text = 0xA001;
+    plat.slot_confirm = 0xA002;
+    plat.slot_left = 0xA003;
+    plat.slot_right = 0xA004;
+    plat.slot_dtor[0] = 0xA005;
+    plat.slot_dtor[1] = 0xA006;
+
+    MenuHost host;
+    CHECK(host.init(cfg, plat));
+
+    std::vector<std::string> log;
+    auto push_provider = [](void* user, void*) {
+        auto* p = static_cast<std::pair<std::vector<std::string>*, const char*>*>(user);
+        p->first->push_back(p->second);
+    };
+    std::pair<std::vector<std::string>*, const char*> p_qol{&log, "qol"};
+    std::pair<std::vector<std::string>*, const char*> p_pack{&log, "pack"};
+    std::pair<std::vector<std::string>*, const char*> p_direct_early{&log, "direct_early"};
+    std::pair<std::vector<std::string>*, const char*> p_direct_late{&log, "direct_late"};
+
+    auto ext_title = [](void*, void*) -> const char* { return "Expansions"; };
+    auto packs_title = [](void*, void*) -> const char* { return "Packs"; };
+
+    // Invalid paths must be rejected
+    CHECK(host.register_menu_subgroup_provider("Grp", "/bad", 0, nullptr, nullptr, 0, nullptr, push_provider, &p_pack) == 0);
+    CHECK(host.register_menu_subgroup_provider("Grp", "bad/", 0, nullptr, nullptr, 0, nullptr, push_provider, &p_pack) == 0);
+    CHECK(host.register_menu_subgroup_provider("Grp", "a//b", 0, nullptr, nullptr, 0, nullptr, push_provider, &p_pack) == 0);
+
+    // Child registered BEFORE parent is declared
+    CHECK(host.register_menu_subgroup_provider("Grp", "ext/packs", 30, packs_title, nullptr, 10, nullptr, push_provider,
+                                               &p_pack) == 1);
+    // Parent declared metadata-only (fn == nullptr) with sub_order=100 after child
+    CHECK(host.register_menu_subgroup_provider("Grp", "ext", 100, ext_title, nullptr, 0, nullptr, nullptr, nullptr) == 1);
+    // Direct providers inside parent "ext" ordered before (10) and after (50) child subgroup "packs" (30)
+    CHECK(host.register_menu_subgroup_provider("Grp", "ext", 100, nullptr, nullptr, 50, nullptr, push_provider,
+                                               &p_direct_late) == 1);
+    CHECK(host.register_menu_subgroup_provider("Grp", "ext", 100, nullptr, nullptr, 10, nullptr, push_provider,
+                                               &p_direct_early) == 1);
+    // Regular group provider at order 0 (before "ext" at 100)
+    CHECK(host.register_menu_group_provider_ordered("Grp", 0, push_provider, &p_qol) == 1);
+
+    // System menu -> Grp
+    void* root_menu = reinterpret_cast<void*>(0x5555);
+    host.on_system_menu(root_menu);
+    CHECK(env.added.size() == 1);
+    PluginMenuItem* grp_item = env.added[0].second;
+
+    // Opening Grp must invoke qol (0), then add ONLY top-level subgroup "ext" (100), NOT "packs"
+    log.clear();
+    CHECK(MenuHost::handle_confirm(grp_item) == FEFW_MENU_OPENED);
+    CHECK(log.size() == 1 && log[0] == "qol");
+    CHECK(env.added.size() == 2);
+    PluginMenuItem* ext_item = env.added[1].second;
+    CHECK(std::strcmp(MenuHost::handle_text(ext_item), "Expansions") == 0);
+
+    // Opening "ext" must invoke direct_early (10), add child subgroup "packs" (30), invoke direct_late (50)
+    log.clear();
+    CHECK(MenuHost::handle_confirm(ext_item) == FEFW_MENU_OPENED);
+    CHECK(log.size() == 2 && log[0] == "direct_early" && log[1] == "direct_late");
+    CHECK(env.added.size() == 3);
+    PluginMenuItem* packs_item = env.added[2].second;
+    CHECK(std::strcmp(MenuHost::handle_text(packs_item), "Packs") == 0);
+
+    // Opening "packs" invokes p_pack
+    log.clear();
+    CHECK(MenuHost::handle_confirm(packs_item) == FEFW_MENU_OPENED);
+    CHECK(log.size() == 1 && log[0] == "pack");
+
+    for (auto* p : env.allocated) delete p;
+    g_fake_env = nullptr;
+}
+
 static std::vector<uint8_t> make_fake_delta(const std::string& json_str) {
     std::vector<uint8_t> buf(64, 0);
     std::memcpy(buf.data(), "FWDL", 4);
@@ -488,6 +587,7 @@ int main() {
     test_msbt_new_label_keeps_tsy1_parallel();
     test_settings_store();
     test_menu_host_groups_and_lifecycle();
+    test_menu_host_nested_subgroups();
     test_vfs_overlay_discovery();
     test_service_registry();
     std::printf("%d passed, %d failed\n", g_passed, g_failed);
